@@ -1,0 +1,3540 @@
+package com.incenteram.remoteval.measurment.ui.scan
+
+
+import android.app.Activity
+import android.app.Dialog
+import android.content.Context
+import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.PorterDuff
+import android.graphics.drawable.ColorDrawable
+import android.media.Image
+import android.os.*
+import android.text.TextUtils
+import android.util.Log
+import android.view.View
+import android.view.WindowManager
+import android.view.animation.Animation
+import android.view.animation.RotateAnimation
+import android.widget.ProgressBar
+import android.widget.Toast
+import androidx.appcompat.content.res.AppCompatResources
+import androidx.appcompat.widget.AppCompatTextView
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.DrawableCompat
+import androidx.core.widget.ImageViewCompat
+import androidx.databinding.DataBindingUtil
+import androidx.lifecycle.observe
+import com.google.ar.core.*
+import com.google.ar.core.exceptions.*
+import com.google.gson.Gson
+import com.incenteram.remoteval.MainActivity
+import com.incenteram.remoteval.R
+import com.incenteram.remoteval.base.BaseActivity
+import com.incenteram.remoteval.base.BaseApplication
+import com.incenteram.remoteval.databinding.ActivityMainBinding
+import com.incenteram.remoteval.glsurfaceview.ar.ArRenderer
+import com.incenteram.remoteval.glsurfaceview.ar.ArView
+import com.incenteram.remoteval.glsurfaceview.helpers.*
+import com.incenteram.remoteval.glsurfaceview.render.SampleRender
+import com.incenteram.remoteval.measurment.model.FileWithTime
+import com.incenteram.remoteval.measurment.model.PreviousVideoScan
+import com.incenteram.remoteval.measurment.model.ZipFileUpdateInfo
+import com.incenteram.remoteval.measurment.utilities.FastMovementDetection
+import com.incenteram.remoteval.measurment.utilities.Proximity
+import com.incenteram.remoteval.measurment.utilities.SidewaysWalkDetection
+import com.incenteram.remoteval.measurment.viewmodel.MainViewModel
+import com.incenteram.remoteval.utils.*
+import com.incenteram.remoteval.utils.AppUtils.currentLocalParticipantSid
+import com.incenteram.remoteval.utils.AppUtils.currentScreenSharedSid
+import com.incenteram.remoteval.utils.AppUtils.eLog
+import com.incenteram.remoteval.utils.AppUtils.isARFirstTImeInitaizeRunning
+import com.incenteram.remoteval.utils.AppUtils.isOpenNewActiivty
+import com.incenteram.remoteval.utils.AppUtils.isRefresh
+import com.incenteram.remoteval.utils.SentryUtils.captureException
+import com.incenteram.remoteval.utils.SentryUtils.captureMessage
+import com.incenteram.remoteval.utils.constants.*
+import com.incenteram.remoteval.utils.constants.AppConstants.DATA
+import com.incenteram.remoteval.utils.constants.AppConstants.ONE
+import com.incenteram.remoteval.utils.constants.AppConstants.TWO
+import com.incenteram.remoteval.utils.constants.AppConstants.TYPE
+import com.incenteram.remoteval.utils.constants.MeasurementFlow.DTT_MEASUREMENT_REUPLOAD_VIDEO_AVAILABLE
+import com.incenteram.remoteval.utils.constants.SCANSTATUS.SCAN_PAUSE
+import com.incenteram.remoteval.utils.constants.SCANSTATUS.SCAN_RUNNING
+import com.incenteram.remoteval.utils.constants.SCAN_FAIL_REASON.DRIFT
+import com.incenteram.remoteval.utils.constants.SCAN_FAIL_REASON.RESUME_SCAN
+import com.incenteram.remoteval.utils.constants.ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID
+import com.incenteram.remoteval.videocall.model.GetCallInfo
+import com.incenteram.remoteval.videocall.twilio.RxBus
+import com.incenteram.remoteval.videocall.twilio.RxBus.publish
+import com.incenteram.remoteval.videocall.twilio.RxEvent
+import com.incenteram.remoteval.videocall.twilio.RxEvent.EventResumeCall
+import com.incenteram.remoteval.videocall.ui.VideoCallActivity
+import com.microsoft.azure.storage.StorageException
+import com.microsoft.azure.storage.blob.BlobOutputStream
+import com.microsoft.azure.storage.blob.CloudBlobContainer
+import dagger.hilt.android.AndroidEntryPoint
+import io.reactivex.rxjava3.disposables.Disposable
+import net.lingala.zip4j.core.ZipFile
+import net.lingala.zip4j.model.ZipParameters
+import net.lingala.zip4j.progress.ProgressMonitor
+import net.lingala.zip4j.util.Zip4jConstants
+import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileNotFoundException
+import java.io.IOException
+import java.lang.Math.atan2
+import java.net.URI
+import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
+import kotlin.collections.ArrayList
+import kotlin.jvm.internal.Intrinsics
+
+
+@AndroidEntryPoint
+class VideoScanActivity : BaseActivity<MainViewModel>() {
+
+    @Inject
+    lateinit var mainViewModel: MainViewModel
+
+    @Inject
+    lateinit var mPreference: Prefs
+
+    @Inject
+    lateinit var res: Resource
+
+    private var mARCoreSession: ARCoreSession? = null
+    private val mHandler = Handler()
+    private val mIsRecording = AtomicBoolean(false)
+    private var mWakeLock: PowerManager.WakeLock? = null
+    private var mInterfaceTimer = Timer()
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var mDialogZip: Dialog
+    private lateinit var mDialogUploading: Dialog
+    private lateinit var mDialogCancle: Dialog
+    private lateinit var mDialogZipRetry: Dialog
+    private lateinit var mDialogZipUploadRetry: Dialog
+    private lateinit var mDialogEndAndPublishPermission: Dialog
+    private lateinit var mDialogCancelOngoingScan: Dialog
+    private lateinit var mDialogVideoError: Dialog
+    private lateinit var mDialogScanAbort: Dialog
+    private lateinit var mDialogScanAbortStorge: Dialog
+    private lateinit var mDialogScanAbortWarringStorge: Dialog
+    private lateinit var mDialogReuploadScan: Dialog
+
+    private lateinit var zipProgressText: AppCompatTextView
+    private lateinit var uploadProgressText: AppCompatTextView
+    private lateinit var zipRetryBtn: AppCompatTextView
+    private lateinit var zipRetryCancelBtn: AppCompatTextView
+    private lateinit var zipRetryUploadBtn: AppCompatTextView
+    private lateinit var zipRetryUploadCancelBtn: AppCompatTextView
+    private lateinit var zipUploadCancelBtn: AppCompatTextView
+    private lateinit var endAndPublishPermissionYesBtn: AppCompatTextView
+    private lateinit var endAndPublishPermissionNoBtn: AppCompatTextView
+    private lateinit var cancelOngoingScanYesBtn: AppCompatTextView
+    private lateinit var cancelOngoingScanNoBtn: AppCompatTextView
+
+    private var zipFileUpdate: AsyncTask<String?, String?, String?>? = null
+    private var floorName: String = ""
+    private var floorIndex: String = ""
+    private var wallThickness: String = ""
+    private var latitude: String = ""
+    private var longtitude: String = ""
+
+    private lateinit var diposableEventRemoteUserDataTrackGet: Disposable
+    private lateinit var diposableEventDisconnect: Disposable
+    private lateinit var mRescanBtn: AppCompatTextView
+    private var isUploadingStarted = false
+    private var craeteZipName = ""
+    private var isCancelPress = false
+    private var isZipUpload = false
+    private var isDeviceInLandscap = true
+    private var apiCallFail = false
+    private var currentStatusVIdeo = SCANSTATUS.IDEAL
+    private var orderNumber = ""
+
+    private val proximity = Proximity()
+    private val sideWalkDetection = SidewaysWalkDetection()
+    private var fastMovementDetection: FastMovementDetection? = null
+    private lateinit var mDialogRescanArea: Dialog
+    private var isRescanDTSent = false
+    private var isVideoScreenACKReceive = false
+    private var mScreenACKTimer = Timer()
+    var dialog: Dialog? = null
+
+    lateinit var arCoreSessionHelper: ARCoreSessionLifecycleHelper
+    lateinit var view: ArView
+    lateinit var renderer: ArRenderer
+
+    val instantPlacementSettings = InstantPlacementSettings()
+    val depthSettings = DepthSettings()
+    private var isPreviousScanZipUploading = false
+    private lateinit var previousVideoScanData : PreviousVideoScan
+    private var isPreviousScanFileDetect = false
+    private var isFileZipAvailalbeOrNeedToCreate = true
+    private var fileWithTimeList = ArrayList<FileWithTime.Files>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = DataBindingUtil.setContentView(this, R.layout.activity_main)
+
+        initializeViews()
+        try {
+            fastMovementDetection = FastMovementDetection(this)
+        } catch (e: Exception) {
+            AppUtils.eLog("fastMovement onCreate", e.message.toString());
+        }
+
+
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        mWakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "sensors_data_logger:wakelocktag"
+        )
+
+        mWakeLock!!.acquire()
+        handleApiResponse()
+        handleRxEvent()
+
+        if (intent.hasExtra("latitude")) {
+            latitude = intent.getStringExtra("latitude")!!
+        }
+        if (intent.hasExtra("longitude")) {
+            longtitude = intent.getStringExtra("longitude")!!
+        }
+        if (intent.hasExtra("floorName")) {
+            floorName = intent.getStringExtra("floorName")!!
+        }
+        if (intent.hasExtra("floorIndex")) {
+            floorIndex = intent.getStringExtra("floorIndex")!!
+        }
+        if (intent.hasExtra("wallThickness")) {
+            wallThickness = intent.getStringExtra("wallThickness")!!
+        }
+
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+            if (mPreference.getString(PrefsConstants.CALLINFO, "")!!.isNotEmpty()) {
+                val callInfo = Gson().fromJson(
+                    mPreference.getString(PrefsConstants.CALLINFO, ""),
+                    GetCallInfo::class.java
+                )
+                orderNumber = callInfo.data.orderNumber!!
+            }
+        } else {
+            if (mPreference.getString(PrefsConstants.ORDER_NUMBER, "")!!.isNotEmpty()) {
+                orderNumber = mPreference.getString(PrefsConstants.ORDER_NUMBER, "")!!
+            }
+        }
+
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+            publishGoogleAnalytics(
+                FirebaseAnalyticsConfig.START_VIDEO_BASE_SCAN,
+                FirebaseAnalyticsConfig.VIDEO
+            )
+        } else {
+            publishGoogleAnalytics(
+                FirebaseAnalyticsConfig.START_VIDEO_BASE_SCAN,
+                FirebaseAnalyticsConfig.SELF_MEASUREMENT
+            )
+        }
+
+        val currentScanJobOrderId = mPreference.getString(PrefsConstants.CURRENT_JOB_ORDER_ID_FOR_VIDEO_SCAN, "")!!
+
+        if(currentScanJobOrderId.isEmpty()){
+            mPreference.save(PrefsConstants.CURRENT_JOB_ORDER_ID_FOR_VIDEO_SCAN,orderNumber)
+        }else{
+            if(currentScanJobOrderId.contentEquals(orderNumber)){
+                checkPreviousScanData()
+            }
+            else{
+                deleteZipFile()
+                mPreference.save(PrefsConstants.CURRENT_JOB_ORDER_ID_FOR_VIDEO_SCAN,orderNumber)
+            }
+
+        }
+
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+            startTimerForScreenAck()
+        }else{
+            isVideoScreenACKReceive = true
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+            initializeGlSurfaceView()
+            observerAddforGlsurfaceview()
+        }
+    }
+
+    private fun observerAddforGlsurfaceview() {
+        if(!isPreviousScanFileDetect) {
+                      if(mARCoreSession!=null)
+                      {
+                          return
+                      }
+                      else {
+                          mARCoreSession = ARCoreSession(this@VideoScanActivity)
+                          renderer.update(mARCoreSession!!)
+                          lifecycle.addObserver(arCoreSessionHelper)
+                          lifecycle.addObserver(renderer)
+                          lifecycle.addObserver(view)
+                          binding.isFileUploading = false
+                      }
+
+                } }
+
+    private fun checkPreviousScanData() {
+        try {
+            resetUI()
+            if (checkIfZipIsAvailableOrNot()) {
+                binding.isFileUploading = true
+                isPreviousScanFileDetect = true
+                isFileZipAvailalbeOrNeedToCreate = true
+            } else {
+                if(checkVideoScanFileAvailable()) {
+                    try {
+                        isFileZipAvailalbeOrNeedToCreate = false
+
+                        val fileData =
+                            ModelPreferencesManager.get<FileWithTime>(PrefsConstants.PREVIOUS_VIDEO_SCAN_FILE_WITH_TIME)
+
+                        if (fileData != null) {
+                            if (fileData.files.size > 0 && fileData.files.size == 1) {
+                                if (fileData.files[0].time < 30) {
+                                    deleteZipFile()
+                                } else {
+                                    binding.isFileUploading = true
+                                    isPreviousScanFileDetect = true
+                                }
+                            } else {
+                                for (i in 0 until fileData.files.size) {
+                                    if (fileData.files[i].time < 30) {
+                                        if(fileData.files[i].fileNumber != -1){
+                                            deleteParticularFile(fileData.files[i].fileNumber)
+                                        }
+                                    }
+                                }
+                                binding.isFileUploading = true
+                                isPreviousScanFileDetect = true
+                            }
+                        }
+                    }catch (e: Exception){
+
+                    }
+                }
+            }
+            if (mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false) &&
+                    isPreviousScanFileDetect) {
+                performPreviousVideoScanUploading()
+            }
+        } catch (e: java.lang.Exception) {
+            AppUtils.eLog("exception",e.message.toString())
+        }
+    }
+
+    private fun deleteParticularFile(filenumber: Int){
+        try {
+            val cacheZipData =
+                File("${cacheDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}/$filenumber")
+            if (cacheZipData.exists()) {
+                deleteCacheFiles(cacheZipData)
+            }
+        }catch (e: Exception){
+
+        }
+    }
+
+    private fun performPreviousVideoScanUploading(){
+        try {
+            if (isFileZipAvailalbeOrNeedToCreate) {
+                releaseArArCamera(true)
+                setUpReuploadPreviousScanDialog(this,onUpload = {
+                    publishReuploadPreviousScanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_REUPLOAD_PREVIOUS_SCAN)
+                    publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE)
+                    startReuploadPreviousScan()
+                },onCancel = {
+                    isPreviousScanFileDetect = false
+                    publishReuploadPreviousScanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_REUPLOAD_PREVIOUS_SCAN)
+                    publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_COMPLETE_UPLOAD_PROCESS)
+                    deleteZipFile()
+                    releaseArArCamera(false)
+                    observerAddforGlsurfaceview()
+                })
+            } else {
+                    releaseArArCamera(true)
+                    setUpReuploadPreviousScanDialog(this,onUpload = {
+                        publishReuploadPreviousScanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_REUPLOAD_PREVIOUS_SCAN)
+                        publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE)
+                        startGenerateZipForPreviousScan()
+                    },onCancel = {
+                        isPreviousScanFileDetect = false
+                        publishReuploadPreviousScanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_REUPLOAD_PREVIOUS_SCAN)
+                        publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_COMPLETE_UPLOAD_PROCESS)
+                        deleteZipFile()
+                        releaseArArCamera(false)
+                        observerAddforGlsurfaceview()
+                    })
+            }
+        } catch (e: java.lang.Exception) {
+            AppUtils.eLog("exception",e.message.toString())
+        }
+    }
+
+    private fun startReuploadPreviousScan(){
+        previousVideoScanData = ModelPreferencesManager.get<PreviousVideoScan>(PrefsConstants.PREVIOUS_VIDEO_SCAN_DATA)!!
+        isPreviousScanZipUploading = true
+
+        if (AppUtils.hasInternet(this@VideoScanActivity)) {
+            if (zipFileUpdate != null) {
+                zipFileUpdate = null
+            }
+
+            zipFileUpdate =
+                ZipUploadTask().execute(previousVideoScanData.zipPath)
+
+        } else {
+            showHideZipUploadRetry(true, previousVideoScanData.zipPath)
+        }
+    }
+
+    private fun startGenerateZipForPreviousScan(){
+        previousVideoScanData = ModelPreferencesManager.get<PreviousVideoScan>(PrefsConstants.PREVIOUS_VIDEO_SCAN_DATA)!!
+        isPreviousScanZipUploading = true
+        generateZipFile()
+    }
+
+    private fun checkIfZipIsAvailableOrNot() : Boolean {
+        var isZipAvailalbe = false
+        try{
+            val zip = File("${filesDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}")
+            if (zip.exists()) {
+                if (zip.isDirectory) {
+                    val children: Array<String> = zip.list()!!
+                    isZipAvailalbe = children.isNotEmpty()
+                }
+            }
+        }catch (e: java.lang.Exception){
+            AppUtils.eLog("exception",e.message.toString())
+        }
+        return isZipAvailalbe
+    }
+
+    private fun checkVideoScanFileAvailable(): Boolean {
+        var isVideoScanFileAvailable = false
+        try {
+            val cacheZipData = File("${cacheDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}")
+            if (cacheZipData.exists()) {
+                if (cacheZipData.isDirectory) {
+                    val children: Array<String> = cacheZipData.list()!!
+                    isVideoScanFileAvailable = children.isNotEmpty()
+                }
+            }
+        } catch (e: java.lang.Exception) {
+            AppUtils.eLog("exception", e.message.toString())
+        }
+        return isVideoScanFileAvailable
+    }
+
+    private fun initializeGlSurfaceView() {
+
+        // Setup ARCore session lifecycle helper and configuration.
+        arCoreSessionHelper = ARCoreSessionLifecycleHelper(this)
+        // If Session creation or Session.resume() fails, display a message and log detailed
+        // information.
+        arCoreSessionHelper.exceptionCallback =
+            { exception ->
+                val message =
+                    when (exception) {
+                        is UnavailableUserDeclinedInstallationException ->
+                            "Please install Google Play Services for AR"
+                        is UnavailableApkTooOldException -> "Please update ARCore"
+                        is UnavailableSdkTooOldException -> "Please update this app"
+                        is UnavailableDeviceNotCompatibleException -> "This device does not support AR"
+                        is CameraNotAvailableException -> "Camera not available. Try restarting the app."
+                        else -> "Failed to create AR session: $exception"
+                    }
+                AppUtils.showToast(this, message)
+            }
+
+        // Configure session features, including: Lighting Estimation, Depth mode, Instant Placement.
+        arCoreSessionHelper.beforeSessionResume = ::configureSession
+        // Set up the Hello AR renderer.
+        renderer = ArRenderer(this, mARCoreSession)
+        // Set up Hello AR UI.
+        view = ArView(this, window.decorView.rootView)
+        //  setContentView(view.root)
+        // Sets up an example renderer using our HelloARRenderer.
+        SampleRender(view.surfaceView, renderer, assets)
+
+        depthSettings.onCreate(this)
+        instantPlacementSettings.onCreate(this)
+
+    }
+
+    fun configureSession(session: Session) {
+        session.configure(
+            session.config.apply {
+                //  lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+
+                // Depth API is used if it is configured in Hello AR's settings.
+
+                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                        depthMode = Config.DepthMode.AUTOMATIC
+                        isDepthSupported = true
+                    } else {
+                        depthMode = Config.DepthMode.DISABLED
+                        isDepthSupported = false
+                    }
+
+                // Instant Placement is used if it is configured in Hello AR's settings.
+                /*   instantPlacementMode =
+                    if (instantPlacementSettings.isInstantPlacementEnabled) {
+                        Config.InstantPlacementMode.LOCAL_Y_UP
+                    } else {
+                        Config.InstantPlacementMode.DISABLED
+                    }*/
+                updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                focusMode = Config.FocusMode.FIXED
+                planeFindingMode = Config.PlaneFindingMode.DISABLED
+                instantPlacementMode = Config.InstantPlacementMode.DISABLED
+            }
+        )
+
+        var selectedCameraConfig: CameraConfig? = null
+        var cpuImageSizeArr = ""
+        var cpuTextureSizeArr: kotlin.String? = ""
+        val filter = CameraConfigFilter(session)
+        filter.setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
+        val cameraConfigsList = session.getSupportedCameraConfigs(filter)
+        for (currentCameraConfig in cameraConfigsList) {
+            val cpuImageSize = currentCameraConfig.imageSize
+            val gpuTextureSize = currentCameraConfig.textureSize
+            Log.d(
+                "TAG",
+                "CurrentCameraConfig CPU image size:$cpuImageSize GPU texture size:$gpuTextureSize"
+            )
+            if (!cpuImageSizeArr.contentEquals("")) cpuImageSizeArr =
+                cpuImageSizeArr + "," + cpuImageSize else cpuImageSizeArr =
+                cpuImageSize.toString() + ""
+            if (!cpuTextureSizeArr!!.contentEquals("")) cpuTextureSizeArr =
+                cpuTextureSizeArr + "," + gpuTextureSize else cpuTextureSizeArr =
+                gpuTextureSize.toString() + ""
+            if (cpuImageSize.toString().contentEquals("640x480")) {
+                Log.d("TAG", "go inside")
+                selectedCameraConfig = currentCameraConfig
+                break
+            }
+        }
+        if (selectedCameraConfig != null)
+            session.cameraConfig = selectedCameraConfig
+
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        results: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (!CameraPermissionHelper.hasCameraPermission(this)) {
+            // Use toast instead of snackbar here since the activity will exit.
+            Toast.makeText(
+                this,
+                "Camera permission is needed to run this application",
+                Toast.LENGTH_LONG
+            )
+                .show()
+            if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
+                // Permission denied with checking "Do not ask again".
+                CameraPermissionHelper.launchPermissionSettings(this)
+            }
+            finish()
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus)
+    }
+
+    private fun publishGoogleAnalytics(eventName: String, value: String) {
+        try {
+            FirebaseAnalyticsConfig.postEventToGA(
+                eventName,
+                FirebaseAnalyticsConfig.SESSION_TYPE,
+                value
+            )
+        } catch (e: java.lang.Exception) {
+            AppUtils.eLog("videoTrackerException", e.message.toString())
+        }
+    }
+
+    private fun handleRxEvent() {
+        diposableEventRemoteUserDataTrackGet =
+            RxBus.listen(RxEvent.EventRemoteUserDataTrackGet::class.java).subscribe {
+                when (it.type) {
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_CLICK_EVENT -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+                            val btnType = JSONObject(it.json).getJSONObject(AppConstants.DATA)
+                                .get(VideoScan.DTT_REMOTE_VIDEO_BASE_TYPE_PARAM) as String
+
+                            when {
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_START_VIDEO_BTN_TYPE) -> {
+
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+
+                                    if (STORAGE_LIMIT_SIZE != 0.0 && AppUtils.getLimitMemorySize(
+                                            this
+                                        ) < STORAGE_LIMIT_SIZE
+                                    ) {
+                                        mDialogScanAbortWarringStorge =
+                                            AppUtils.showZipFailDialog(this, 5, onRetry = {
+                                                startScaningFromDT()
+                                            }, onCancel = {})
+                                    } else {
+                                        startScaningFromDT()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE) -> {
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+                                    hideRescanDialog()
+
+                                    if (mainViewModel.timerCount > 30) {
+                                        if (mIsRecording.get() && binding.buttonStartStop.text == getString(
+                                                R.string.stop_title
+                                            )
+                                        ) {
+                                            showEndAndPublishPermissionDialog(false)
+                                            stopRecording()
+
+                                            mInterfaceTimer.cancel()
+                                        }
+
+                                    } else {
+                                        if (mIsRecording.get()) {
+                                            publishErrorInEndAndPublish()
+                                        }
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_SCAN_OTHER_FLOOR_BTN_TYPE) -> {
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+
+                                    if (binding.buttonStartStop.text == getString(R.string.scan_other_floor)) {
+                                        rescanOtherFloor()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_BACK_BTN_TYPE) -> {
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+
+                                    showCancelOngoingScanDialog(false)
+                                    onBackPressed()
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP) -> {
+                                    if (this::mDialogZipRetry.isInitialized && mDialogZipRetry.isShowing) {
+                                        clickEventZipRetryBtn()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_CANCEL) -> {
+                                    if (this::mDialogZipRetry.isInitialized && mDialogZipRetry.isShowing) {
+                                        clickEventZipRtryCancelBtn()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_UPLOAD) -> {
+                                    if (this::mDialogZipUploadRetry.isInitialized && mDialogZipUploadRetry.isShowing) {
+                                        clickEventZipUploadRetryBtn()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_UPLOAD_CANCEL) -> {
+                                    if (this::mDialogZipUploadRetry.isInitialized && mDialogZipUploadRetry.isShowing) {
+                                        clickEventZipUploadRtryCancelBtn()
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+                            val btnType = JSONObject(it.json).getJSONObject(AppConstants.DATA)
+                                .get(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM) as String
+
+                            when {
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_SCAN) -> {
+                                    if (this::mDialogVideoError.isInitialized && mDialogVideoError.isShowing) {
+                                        mDialogVideoError.dismiss()
+                                        retryVideoError()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_SCAN) -> {
+                                    if (this::mDialogVideoError.isInitialized && mDialogVideoError.isShowing) {
+                                        mDialogVideoError.dismiss()
+                                        cancelVideoError()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+
+                            val btnType = JSONObject(it.json).getJSONObject(AppConstants.DATA)
+                                .get(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM) as String
+
+                            when {
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN_BTN_DT) -> {
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+
+                                    if (dialog != null && dialog!!.isShowing) {
+                                        dialog!!.dismiss()
+                                    }
+
+                                    if (this::mDialogRescanArea.isInitialized && mDialogRescanArea.isShowing) {
+                                    } else {
+                                        binding.buttonReScan.callOnClick()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_RESUME -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+
+                            val btnType = JSONObject(it.json).getJSONObject(AppConstants.DATA)
+                                .get(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM) as String
+
+                            when {
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_RESUME_BTN_DT) -> {
+                                    if (this::mDialogScanAbort.isInitialized && mDialogScanAbort.isShowing) {
+                                        mDialogScanAbort.dismiss()
+                                    }
+
+                                    hideScanAbortStorge()
+                                    hideScanAbortWarringStorge()
+
+                                    if (STORAGE_LIMIT_SIZE != 0.0 && AppUtils.getLimitMemorySize(
+                                            this
+                                        ) < STORAGE_LIMIT_SIZE
+                                    ) {
+                                        mDialogScanAbortWarringStorge =
+                                            AppUtils.showZipFailDialog(this, 5, onRetry = {
+                                                resumeScanningFromDT()
+                                            }, onCancel = {})
+                                    } else {
+                                        resumeScanningFromDT()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_SCREEN_VISIBLE_ACK -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+                            isVideoScreenACKReceive = true
+                            if(isPreviousScanFileDetect){
+                                performPreviousVideoScanUploading()
+                            }
+                        }
+                    }
+
+                    VideoScan.DTT_REMOTE_VIDEO_BASE_REUPLOAD_VIDEO_SCAN -> {
+                        if (BaseApplication.twilioHelper.localParticipant.sid.contentEquals(
+                                JSONObject(it.json).getJSONObject(
+                                    AppConstants.DATA
+                                )
+                                    .get(ShareScreen.DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID) as String
+                            )
+                        ) {
+                            val btnType = JSONObject(it.json).getJSONObject(AppConstants.DATA)
+                                .get(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM) as String
+
+                            when {
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_REUPLOAD_PREVIOUS_SCAN) -> {
+                                    showReuploadPreviousScanDialog(false)
+                                    if(isFileZipAvailalbeOrNeedToCreate){
+                                        publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE)
+                                        startReuploadPreviousScan()
+                                    }else{
+                                        publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE)
+                                        startGenerateZipForPreviousScan()
+                                    }
+                                }
+
+                                btnType.contentEquals(VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_REUPLOAD_PREVIOUS_SCAN) -> {
+                                    showReuploadPreviousScanDialog(false)
+                                    isPreviousScanFileDetect = false
+                                    publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_COMPLETE_UPLOAD_PROCESS)
+                                    deleteZipFile()
+                                    releaseArArCamera(false)
+                                    observerAddforGlsurfaceview()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        diposableEventDisconnect = RxBus.listen(RxEvent.EventDisconnect::class.java).subscribe {
+            if (binding.btnCancelVideoScan.isShown
+                && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+            ) {
+                runOnUiThread {
+                    this.finish()
+                }
+            }
+        }
+    }
+
+    private fun handleApiResponse() {
+        mainViewModel.mLiveDataZipUpdateStatus.observe(this) {
+            if (it != null) {
+                apiCallFail = false
+                if (!mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+                    publishGoogleAnalytics(
+                        FirebaseAnalyticsConfig.PUBLISH_VIDEO_FOR_PLY,
+                        FirebaseAnalyticsConfig.VIDEO
+                    )
+                } else {
+                    publishGoogleAnalytics(
+                        FirebaseAnalyticsConfig.PUBLISH_VIDEO_FOR_PLY,
+                        FirebaseAnalyticsConfig.SELF_MEASUREMENT
+                    )
+                }
+                showToast(getString(R.string.zip_file_uploaded))
+                publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_COMPLETE_UPLOAD_PROCESS)
+
+                if(!isPreviousScanZipUploading){
+                    runOnUiThread {
+                        currentStatusVIdeo = SCANSTATUS.IDEAL
+                        binding.buttonStartStop.isEnabled = true
+                        binding.buttonStartStop.setText(R.string.scan_other_floor)
+                        binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+                        binding.ivFloorScan.setImageDrawable(
+                            ContextCompat.getDrawable(
+                                this,
+                                R.drawable.ic_exit_return
+                            )
+                        )
+                        ImageViewCompat.setImageTintList(
+                            binding.ivFloorScan, ColorStateList.valueOf(
+                                ContextCompat.getColor(this, R.color.white)
+                            )
+                        )
+                        DrawableCompat.setTint(
+                            binding.llPublishFloorScan.background,
+                            ContextCompat.getColor(
+                                this,
+                                R.color.button_green_color
+                            )
+                        )
+
+                        if (mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+                            binding.btnCancelVideoScan.setText(R.string.exit)
+                        }
+                        resumeOrReleaseArArCamera()
+                    }
+                }else{
+                    runOnUiThread {
+                        resetUI()
+                        binding.tvTimer.visibility = View.INVISIBLE
+                        currentStatusVIdeo = SCANSTATUS.IDEAL
+                        resumeOrReleaseArArCamera()
+                    }
+
+                }
+                isPreviousScanFileDetect = false
+                observerAddforGlsurfaceview()
+            }
+        }
+
+        mainViewModel.mLiveDataZipUpdateStatusError.observe(this) {
+            if (binding.btnCancelVideoScan.isShown) {
+                runOnUiThread {
+                    apiCallFail = true
+                    showHideZipUploadRetryWhenApiFail(true, craeteZipName)
+                    resumeOrReleaseArArCamera()
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isRescanDTSent = false
+        Handler(Looper.getMainLooper()).postDelayed({ resumeOrReleaseArArCamera() }, 1000)
+        if (isRefresh) {
+            showToastMessages(getString(R.string.reach_starting_point_of_area))
+            isRefresh = false
+
+            binding.llPublishFloorScan.show()
+
+            if (mIsRecording.get()) {
+                binding.buttonStartStop.setText(getString(R.string.resume))
+            }
+            binding.buttonStartStop.text = getString(R.string.resume)
+            binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_resume_scan
+                )
+            )
+            ImageViewCompat.setImageTintList(
+                binding.ivFloorScan, ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.white)
+                )
+            )
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(
+                    this,
+                    R.color.ar_resume_color
+                )
+            )
+
+            publishRescanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN_BTN_SUCCESSFUL_ACK)
+
+
+            showArToastWindow(
+                R.drawable.ic_move_device,
+                getString(R.string.move_your_device_in_circle),
+                this,
+                true
+            )
+            return
+        }
+        // for resume image compare functionality
+        /* if(isArinitializeRunning)
+    {
+        Handler(Looper.getMainLooper()).postDelayed({
+            binding.buttonStartStop.setText(R.string.stop_title)
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_plan_published
+                )
+            )
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(this, R.color.colorAccent)
+            )
+            ImageViewCompat.setImageTintList(
+                binding.ivFloorScan, ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.white)
+                )
+            )
+            hideTransperentImage()
+        }, 1000)
+
+       return
+    }*/
+
+        isCancelPress = false
+        if (binding.buttonStartStop.text == getString(R.string.start_title)) {
+            binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+            ImageViewCompat.setImageTintList(
+                binding.ivFloorScan, ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.white)
+                )
+            )
+
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(
+                    this,
+                    R.color.button_green_color
+                )
+            )
+        }
+
+        if (currentStatusVIdeo == SCAN_RUNNING) {
+            mARCoreSession!!.FileNumber = 0
+            hideRescanDialog()
+            mARCoreSession?.isHittestDone = false
+            resetScanning()
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_SCAN,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_VIDEO_SCAN_ABORT
+            )
+            Timer().schedule(object : TimerTask() {
+                override fun run() {
+                    runOnUiThread {
+                        resetUI()
+                        hideTransperentImage()
+                        binding.llPublishFloorScan.show()
+                        binding.llReScan.hide()
+                    }
+                }
+            }, 1000)
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN_ACK,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_SCAN
+            )
+            mDialogScanAbort = AppUtils.showZipFailDialog(this, 4, onRetry = {}, onCancel = {})
+            currentStatusVIdeo = SCANSTATUS.IDEAL
+        }
+    }
+
+    private fun resetScanning() {
+        mHandler.post {
+            if (fastMovementDetection != null) {
+                fastMovementDetection!!.stop()
+            }
+            isUploadingStarted = false
+            addFileAndTimeInData()
+            mARCoreSession!!.stopSession()
+            mIsRecording.set(false)
+            mainViewModel.timerCount = 0
+
+            deleteZipFile()
+
+            binding.buttonStartStop.isEnabled = true
+            binding.buttonStartStop.setText(R.string.start_title)
+            binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+            runOnUiThread {
+                binding.llReScan.hide()
+            }
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_scan
+                )
+            )
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(
+                    this,
+                    R.color.button_green_color
+                )
+            )
+            resetUI()
+            mInterfaceTimer.cancel()
+        }
+    }
+
+    override fun onDestroy() {
+        diposableEventRemoteUserDataTrackGet.dispose()
+        diposableEventDisconnect.dispose()
+
+        if (mIsRecording.get()) {
+            isCancelPress = true
+            stopRecording()
+        }
+
+        if (zipFileUpdate != null) {
+            zipFileUpdate!!.cancel(true)
+        }
+
+        hideScanAbortStorge()
+        hideScanAbortWarringStorge()
+
+        mScreenACKTimer.cancel()
+        super.onDestroy()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isOpenNewActiivty = false
+        /*   mARCoreSession!!.isRecord=true
+    mARCoreSession!!.isNonTrackbleStart=false
+    pauseRecordig()*/
+        if (isCancelPress) {
+            if (mIsRecording.get()) {
+                stopRecording()
+            }
+            if (mWakeLock!!.isHeld) {
+                mWakeLock!!.release()
+            }
+
+            runOnUiThread {
+                binding.buttonStartStop.isEnabled = true
+                binding.buttonStartStop.setText(R.string.start_title)
+                binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+                binding.ivFloorScan.setImageDrawable(
+                    ContextCompat.getDrawable(
+                        this,
+                        R.drawable.ic_floor_scan
+                    )
+                )
+                DrawableCompat.setTint(
+                    binding.llPublishFloorScan.background,
+                    ContextCompat.getColor(
+                        this,
+                        R.color.button_green_color
+                    )
+                )
+            }
+
+            hideZipDialog()
+            hideUploadDialog(false)
+            hideUploadCancel()
+            hideRescanDialog()
+            onBackFuncationality()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+
+        if (!isCancelPress && mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false) && mARCoreSession != null) {
+            addFileAndTimeInData()
+            mARCoreSession!!.stopSession()
+        }
+    }
+
+    private fun rescanOtherFloor() {
+        publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_SCAN_OTHER_FLOOR_BTN_TYPE)
+        onBackPressed()
+    }
+
+    private fun startStopRecording(view: View?) {
+        if (!mIsRecording.get()) {
+            if (STORAGE_LIMIT_SIZE != 0.0 && AppUtils.getLimitMemorySize(this) < STORAGE_LIMIT_SIZE) {
+                mDialogScanAbortWarringStorge = AppUtils.showZipFailDialog(this, 5, onRetry = {
+                    if (/*mARCoreSession != null
+                            && mARCoreSession!!.getHitResult() != null
+                            && !mARCoreSession!!.getHitResult()
+                                .isNullOrEmpty() &&*/ !isARFirstTImeInitaizeRunning /*&& !mARCoreSession!!.iSDriftingRunning && mARCoreSession!!.is_check_frame_drift_before_scan*/
+                    ) {
+                        if (isDeviceInLandscap) {
+                            if (isVideoScreenACKReceive) {
+                                startRecording()
+                            } else {
+                                showToastMessages(getString(R.string.restric_user_start_scanning))
+                            }
+                        } else {
+                            showToast(getString(R.string.lbl_turn_in_landscape))
+                        }
+                    } else {
+                        showToast(getString(R.string.lbl_ar_not_initialize))
+                    }
+                }, onCancel = {})
+            } else {
+                if (/*mARCoreSession != null
+                        && mARCoreSession!!.getHitResult() != null
+                        && !mARCoreSession!!.getHitResult()
+                            .isNullOrEmpty() &&*/ !isARFirstTImeInitaizeRunning /*&& !mARCoreSession!!.iSDriftingRunning && mARCoreSession!!.is_check_frame_drift_before_scan*/
+                ) {
+                    if (isDeviceInLandscap) {
+                        if (isVideoScreenACKReceive) {
+                            startRecording()
+                        } else {
+                            showToastMessages(getString(R.string.restric_user_start_scanning))
+                        }
+                    } else {
+                        showToast(getString(R.string.lbl_turn_in_landscape))
+                    }
+                } else {
+                    showToast(getString(R.string.lbl_ar_not_initialize))
+                }
+            }
+        }
+        // for resume image compare functionality
+        /*else {
+         if(binding.buttonStartStop.text == getString(
+                R.string.resume
+            ))
+        {
+
+            showArToastWindow(R.drawable.ic_move_device,
+                getString(R.string.move_your_device_in_circle),
+                this,
+                false)
+            AppUtils.showToast(this,"please focus on trackble surface and then move your devices")
+                val intent = Intent()
+                intent.setClass(this, MainActivity::class.java)
+                intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                startActivity(intent)
+
+                return
+
+
+        }*/
+        else
+            showEndAndPublishPermissionDialog(true)
+    }
+
+
+    private fun startRecording() {
+
+//        binding.tvTimer.visibility = View.VISIBLE
+
+        currentStatusVIdeo = SCAN_RUNNING
+        isPreviousScanZipUploading = false
+        var outputFolder: String? = null
+        try {
+            val folder =
+                OutputDirectoryManager(cacheDir.absolutePath, AppConstants.FLOOR_SCAN_ITEMS)
+            outputFolder = folder.getOutputDirectory()
+        } catch (e: IOException) {
+            directoryCreateError(SCAN_FAIL_REASON.DIRECTORY_CREATE_ERROR)
+            captureException(LOG_TAG.plus(" :: startRecording"), e)
+            Log.e(LOG_TAG, "startRecording: Cannot create output folder.")
+            e.printStackTrace()
+        }
+
+        if (fastMovementDetection != null) {
+            fastMovementDetection!!.startUpdating()
+        }
+
+        if (binding.buttonStartStop.text == getString(R.string.resume)) {
+            publishResumeDT(VideoScan.DTT_REMOTE_VIDEO_BASE_RESUME_BTN_ACK)
+        } else {
+            publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_START_VIDEO_BTN_TYPE)
+        }
+
+        ModelPreferencesManager.put(
+            PreviousVideoScan(floorName,orderNumber, FLOOR_INDEX,
+                WALL_THCKNESS,""),
+            PrefsConstants.PREVIOUS_VIDEO_SCAN_DATA
+        )
+
+        mARCoreSession!!.startSession(outputFolder)
+        mIsRecording.set(true)
+        isOpenNewActiivty = true
+        isUploadingStarted = false
+
+        runOnUiThread {
+            binding.buttonStartStop.isEnabled = true
+            binding.buttonStartStop.setText(R.string.stop_title)
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_plan_published
+                )
+            )
+
+            changeEndAndPublish()
+        }
+
+        mInterfaceTimer = Timer()
+
+        mInterfaceTimer.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                if (currentStatusVIdeo == SCAN_RUNNING) {
+                    if (mARCoreSession!!.isRecord) {
+                        runOnUiThread {
+                            showArToastWindow(
+                                R.drawable.ic_move_device,
+                                getString(R.string.move_your_device_in_circle),
+                                this@VideoScanActivity,
+                                true
+                            )
+                            mainViewModel.timerCount += 1
+                            if (mainViewModel.timerCount > 0) {
+
+                                binding.tvTimer.visibility = View.VISIBLE
+                                binding.tvTimer.text =
+                                    interfaceIntTime(mainViewModel.timerCount)
+
+                            } else {
+                                binding.tvTimer.visibility = View.INVISIBLE
+                            }
+                        }
+                    }
+                    if (mainViewModel.timerCount > 29) { runOnUiThread {
+                            if (!isRescanDTSent) {
+                                publishRescanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN_STATE_OCCUR)
+                                isRescanDTSent = true
+                            }
+                            binding.llReScan.show()
+                        }
+                    }
+                }
+            }
+        }, 1000, 1000)
+    }
+
+    private fun stopRecording() {
+        mHandler.post {
+            if (fastMovementDetection != null) {
+                fastMovementDetection!!.stop()
+            }
+            addFileAndTimeInData()
+            mARCoreSession!!.stopSession()
+            mIsRecording.set(false)
+            isRescanDTSent = false
+            mainViewModel.timerCount = 0
+            runOnUiThread {
+                binding.llReScan.hide()
+            }
+            resetUI()
+            if (!isCancelPress) {
+                publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_END_SCAN_AND_PUBLISH_BTN_TYPE)
+            }
+
+            Handler().postDelayed({
+                if (!isCancelPress) {
+                    currentStatusVIdeo = SCANSTATUS.ZIP_MAKING
+                    generateZipFile()
+                }
+            }, 500) //Timer is in ms here.
+        }
+    }
+
+    fun showToast(text: String?) {
+        runOnUiThread {
+            Toast.makeText(this@VideoScanActivity, text, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun resetUI() {
+        runOnUiThread {
+            binding.tvTimer.visibility = View.INVISIBLE
+            setZipProgressPercentage(getString(R.string.preparing_zip) + " 0%")
+            setUploadProgressPercentage(getString(R.string.zip_uploading) + " 0%")
+        }
+    }
+
+    override fun onBackPressed() {
+        deleteZipFile()
+        // nullify back button when recording starts
+        isCancelPress = true
+        publishVideoScanScreenVisibility(VideoScan.DTT_REMOTE_VIDEO_BASE_SCREEN_GONE,false)
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)) {
+            this.finish()
+            super.onBackPressed()
+        } else {
+            this.finish()
+            super.onBackPressed()
+        }
+    }
+
+    private fun interfaceIntTime(second: Int): String? {
+
+        // check second input
+        if (second < 0) {
+            Log.e(LOG_TAG, "interfaceIntTime: Second cannot be negative.")
+            return null
+        }
+
+        // extract hour, minute, second information from second
+        var input = second
+        val hours = input / 3600
+        input = input % 3600
+        val mins = input / 60
+        val secs = input % 60
+
+        // return interface int time
+//        return String.format(Locale.US, "%02d:%02d:%02d", hours, mins, secs)
+        return String.format(Locale.US, "%02d:%02d", mins, secs)
+    }
+
+
+    private fun initializeViews() {
+
+        res.changeBackgroundTintDrawableOfView(
+            binding.llReScan,
+            R.drawable.button_background_green,
+            R.color.mt_button_bg_color
+        )
+
+        res.changeTextColorOfView(binding.buttonReScan, R.color.mt_button_text_color)
+        res.changeImageViewSrcColor(binding.ivReScan, R.color.mt_button_text_color)
+
+        binding.llPublishFloorScan.setOnClickListener {
+            if (binding.buttonStartStop.text == getString(R.string.scan_other_floor)) {
+                rescanOtherFloor()
+            } else {
+                if (!mIsRecording.get()) {
+                    startStopRecording(it)
+                } else
+                    startStopRecording(it)
+
+            }
+        }
+        binding.buttonReScan.setOnClickListener {
+            setUpRescanAreaDialog(this, onclick = {
+                if (mainViewModel.timerCount <= 30) {
+                    deleteZipFile(true)
+                }
+                mHandler.post {
+                    addFileAndTimeInData()
+                    mARCoreSession!!.stopSession()
+                    mIsRecording.set(false)
+                    mainViewModel.timerCount = 0
+                    resetUI()
+                    mInterfaceTimer.cancel()
+                    binding.buttonStartStop.setText(R.string.start_title)
+                    binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+                    runOnUiThread {
+                        binding.llReScan.hide()
+                    }
+                    binding.ivFloorScan.setImageDrawable(
+                        ContextCompat.getDrawable(
+                            this,
+                            R.drawable.ic_floor_scan
+                        )
+                    )
+                    DrawableCompat.setTint(
+                        binding.llPublishFloorScan.background,
+                        ContextCompat.getColor(
+                            this,
+                            R.color.button_green_color
+                        )
+                    )
+                    binding.tvTimer.text = "00:00"
+                    hideTransperentImage()
+                    mARCoreSession!!.isFirstTime = false
+                    showArToastWindow(
+                        R.drawable.ic_move_device,
+                        getString(R.string.move_your_device_in_circle),
+                        this,
+                        false
+                    )
+                    val intent = Intent()
+                    intent.setClass(this, MainActivity::class.java)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    intent.putExtra("isRefresh", true)
+                    startActivity(intent)
+                }
+
+
+            })
+        }
+
+        binding.btnCancelVideoScan.setOnClickListener {
+            if (binding.btnCancelVideoScan.text == getString(R.string.exit) &&
+                mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+            ) {
+                exitFromSelfMeasurement()
+            } else {
+                if (mIsRecording.get()) {
+                    showCancelOngoingScanDialog(true)
+                } else {
+                    onBackPressed()
+                }
+            }
+        }
+
+        setZipProgressDialog()
+        setUploadProgressDialog()
+        setUpRetryZipDialog()
+        setUpRetryZipUploadDialog()
+        setUpEndAndPublishPermissionDialog()
+        setUpCancelOngoingScan()
+    }
+
+    private fun exitFromSelfMeasurement() {
+        AppUtils.isMeasurementStartedFromLink = false
+        mPreference.save(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        mPreference.remove(PrefsConstants.JWT_TOKEN)
+
+        mPreference.save(PrefsConstants.IS_GUEST_USER_FLOW_ACTIVE, false)
+        mPreference.save(PrefsConstants.IS_VIDEO_CALL_FLOW_ACTIVE, true)
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_MEASUREMENT_LINK, false)
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_CALL_LINK, false)
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_CALL_LINK_DURING_ONGOING_CALL, false)
+        mPreference.save(
+            PrefsConstants.IS_APP_OPEN_FROM_MEASUREMENT_LINK_DURING_ONGOING_MEASUREMENT,
+            false
+        )
+        val mainIntent = Intent(this, VideoCallActivity::class.java)
+        mainIntent.putExtra(PrefsConstants.IS_USER_ADD_CALLUID, true)
+        mainIntent.putExtra(PrefsConstants.BASE_URL_CON, BASE_URL)
+        mainIntent.putExtra(PrefsConstants.BASE_SUPPORT_CON, BASE_SUPPORT)
+        mainIntent.putExtra(PrefsConstants.BASE_DEEP_LINK_CON, BASE_DEEP)
+        startActivity(mainIntent)
+
+        //release unity while kill unity using activity
+        UnityPlayerSingleton.getInstance(baseContext).unityPlayer.quit()
+        finishAffinity()
+    }
+
+    companion object {
+        private val LOG_TAG = VideoScanActivity::class.java.name
+        private const val MIN_OPENGL_VERSION = 3.0
+        var isDepthSupported = false
+
+        private fun getAngles(fArr: FloatArray): FloatArray {
+            val f = fArr[0]
+            val f2 = fArr[1]
+            val f3 = fArr[2]
+            val f4 = fArr[3]
+            val f5 = f4 * f4
+            val f6 = f * f
+            val f7 = f2 * f2
+            val f8 = f3 * f3
+            val f9 = 2.toFloat()
+            return floatArrayOf(
+                Math.atan2(
+                    (f9 * f * f4 - f9 * f2 * f3).toDouble(),
+                    (-f6 + f7 - f8 + f5).toDouble()
+                ).toFloat(),
+                Math.asin((f9 * (f * f2 + f3 * f4) / (f6 + f7 + f8 + f5)).toDouble()).toFloat()
+            )
+        }
+
+        fun showArAlert(
+            frame: Frame?,
+            camera: Camera,
+            context: VideoScanActivity,
+            acquireDepthImage: Image?,
+            FrameNumber: Int?,
+            onUpdateFrames: Int
+        ) {
+            try {
+                val camera2: Camera = camera
+                val pose: Pose = camera2.pose
+                val rotationQuaternion: FloatArray = pose.rotationQuaternion
+                val angles: FloatArray = getAngles(rotationQuaternion)
+                val f = 180.toFloat()
+                val d = (angles[0] * f).toDouble() / 3.141592653589793
+                val d2 = (angles[1] * f).toDouble() / 3.141592653589793
+                val HORIZONTAL_WARNING_MAX_ANGLE = 0.0872665
+                val HORIZONTAL_WARNING_MIN_ANGLE = -1.317994
+                val pitch: Double = getPitch(camera)
+                val d4: Double = 0.0
+                val d5: Double = -0.1
+                val d6: Double = 0.4
+
+                try {
+                    if (context.fastMovementDetection != null && FrameNumber != null && context.mIsRecording.get() && context.currentStatusVIdeo == SCAN_RUNNING) {
+                        context.fastMovementDetection!!.updateFastMovementState(
+                            FrameNumber,
+                            camera.trackingState
+                        )
+                    }
+                } catch (e: java.lang.Exception) {
+                    AppUtils.eLog("fastMovement showArAlert", e.message.toString())
+                }
+
+                /*  try{
+                if(context.mIsRecording.get() && context.currentStatusVIdeo == SCANSTATUS.SCAN_RUNNING && context.sideWalkDetection != null && onUpdateFrames == 0){
+                    val pose = camera.pose
+                    Intrinsics.checkNotNullExpressionValue(pose, "camera.pose")
+                    val translation = pose.translation
+                    Intrinsics.checkNotNullExpressionValue(
+                        translation,
+                        "camera.pose.translation"
+                    )
+                    context.sideWalkDetection.setPreviousTranslation(translation)
+                }
+
+                if(context.mIsRecording.get() && context.currentStatusVIdeo == SCANSTATUS.SCAN_RUNNING && context.sideWalkDetection != null && onUpdateFrames % 5 == 0){
+                    context.sideWalkDetection.detectSidewaysWalk(frame!!,onUpdateFrames,FrameNumber!!)
+                }
+            }catch(e: java.lang.Exception) {
+                AppUtils.eLog("sideWalk showArAlert", e.message.toString())
+            }
+*/
+                if (camera.trackingFailureReason == TrackingFailureReason.INSUFFICIENT_LIGHT && context.mIsRecording.get() && context.currentStatusVIdeo == SCAN_RUNNING) {
+                    /*   if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }*/
+                    context.showArAlert(
+                        0,
+                        context.getString(R.string.ar_alert_low_light_title),
+                        "",
+                        R.color.black, 0F
+                    )
+                    return
+                } else if (camera.trackingFailureReason == TrackingFailureReason.INSUFFICIENT_FEATURES && context.mIsRecording.get()
+                    && context.currentStatusVIdeo == SCAN_RUNNING
+                ) {
+                    /* if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }
+               */ context.showArAlert(
+                        0,
+                        context.getString(R.string.ar_alert_object_title) + " " + context.getString(
+                            R.string.ar_alert_object_msg
+                        ),
+                        "",
+                        R.color.black, 0F
+                    )
+                    return
+                }/*else if (context.mIsRecording.get() && context.currentStatusVIdeo == SCANSTATUS.SCAN_RUNNING && context.sideWalkDetection != null &&
+                    context.sideWalkDetection.currentState != null && context.sideWalkDetection.currentState != AppUtils.SideWalkState.NONE
+                ) {
+                    if (context.alertVideoScan.isShown) {
+                        context.alertVideoScan.hide()
+                    }
+
+                    var msg = ""
+                    var alertImage = 0
+
+                    if (context.sideWalkDetection.currentState == AppUtils.SideWalkState.TURN_LEFT) {
+                        msg = context.getString(R.string.ar_alert_left_side_walk_msg)
+                        alertImage = R.drawable.ic_left_side
+                    } else {
+                        msg = context.getString(R.string.ar_alert_right_side_walk_msg)
+                        alertImage = R.drawable.ic_right_side
+                    }
+
+                        context.showArAlert(
+                            alertImage,
+                            context.getString(R.string.ar_alert_side_walk_title),
+                            msg,
+                            R.color.ar_alert, 0F
+                        )
+                }*/
+                else if (d2 < (-45).toDouble()) {
+                    eLog("====>", "turn your")
+                    /*            if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }
+    */            if (!context.isUploadingStarted) {
+                        context.isDeviceInLandscap = false
+                        context.showArAlert(
+                            R.drawable.ic_landscap,
+                            context.getString(R.string.ar_alert_landscap_title),
+                            "",
+                            R.color.black, 0F
+                        )
+                    }
+                } else if ((d < -90.0 || d > 90.0) && context.mIsRecording.get() && context.currentStatusVIdeo == SCAN_RUNNING) {
+                    if (context.binding.alertVideoScan.alertVideoScan.isShown && context.binding.alertVideoScan.tvAlertVideoScan.text != context.getString(
+                            R.string.ar_alert_rotate_title
+                        )
+                    ) /*{
+                        context.alertVideoScan.hide()
+                    }*/
+                        if (context.binding.alertVideoScan.tvAlertVideoScan.text != context.getString(R.string.ar_alert_rotate_title)) {
+                            context.showArAlert(
+                                R.drawable.ic_rotate,
+                                context.getString(R.string.ar_alert_rotate_title),
+                                context.getString(R.string.ar_alert_rotate_msg),
+                                R.color.ar_alert, 180F
+                            )
+                        }
+                } else if (acquireDepthImage != null && FrameNumber != null && context.mIsRecording.get() && context.currentStatusVIdeo == SCANSTATUS.SCAN_RUNNING && context.proximity.getProximityState(
+                        acquireDepthImage,
+                        FrameNumber
+                    ) == AppUtils.ProximityState.TOO_CLOSE
+                ) {
+                    context.showArAlert(
+                        R.drawable.ic_too_close,
+                        context.getString(R.string.ar_alert_too_close_title),
+                        context.getString(R.string.ar_alert_too_close_msg),
+                        R.color.ar_alert, 0F
+                    )
+                } else if (pitch >= d6 && context.mIsRecording.get()
+                    && context.currentStatusVIdeo == SCAN_RUNNING
+                ) {
+                    /* if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }*/
+                    context.showArAlert(
+                        R.drawable.ic_tilt_back,
+                        context.getString(R.string.ar_alert_celling_title),
+                        context.getString(R.string.ar_alert_celling_msg),
+                        R.color.ar_alert, 0F
+                    )
+                }/* else if ((pitch >= d5 && pitch < d6) && context.mIsRecording.get()) {
+            *//*    if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }
+                context.showArAlert(
+                    R.drawable.ic_tilt_forward,
+                    context.getString(R.string.ar_alert_tilt_forward_title),
+                    "",
+                    R.color.ar_alert,
+                    0f
+                )*//*
+            }*/ else if (pitch < HORIZONTAL_WARNING_MIN_ANGLE && context.mIsRecording.get()
+                    && context.currentStatusVIdeo == SCAN_RUNNING
+                ) {
+                    /* if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }*/
+                    context.showArAlert(
+                        R.drawable.ic_celing,
+                        context.getString(R.string.ar_alert_tilt_backward_title),
+                        "",
+                        R.color.ar_alert,
+                        0f
+                    )
+                } else if (context.mIsRecording.get() && context.currentStatusVIdeo == SCAN_RUNNING && context.fastMovementDetection != null && context.fastMovementDetection!!.state == AppUtils.FastMovementState.FAST_TURNING) {
+                    /* if (context.alertVideoScan.isShown) {
+                    context.alertVideoScan.hide()
+                }*/
+                    context.showArAlert(
+                        R.drawable.ic_fast,
+                        context.getString(R.string.ar_alert_fast_title),
+                        context.getString(R.string.ar_alert_fast_msg),
+                        R.color.ar_alert, 0F
+                    )
+                } else {
+                    eLog("====>", " else")
+
+                    context.isDeviceInLandscap = true
+                    context.binding.alertVideoScan.alertVideoScan.hide()
+                }
+            } catch (e: Exception) {
+                AppUtils.eLog("tooClose exception", e.message.toString())
+            }
+        }
+
+        fun getPitch(camera: Camera): Double {
+            Intrinsics.checkNotNullParameter(camera, "camera")
+            val qx = camera.displayOrientedPose.qx()
+            val qz = camera.displayOrientedPose.qz()
+            val d = 2.toDouble()
+            val d2 = d * qx
+            return atan2(
+                camera.displayOrientedPose.qw() * d2 - camera.displayOrientedPose.qy() * d * qz,
+                1 - d2 * qx - d * qz * qz
+            )
+        }
+
+        fun showArToastWindow(
+            src: Int,
+            message: String,
+            context: VideoScanActivity,
+            isArInitialized: Boolean
+        ) {
+            context.showArToastWindowMain(src, message, isArInitialized)
+        }
+
+        fun resumeOrReleaseArArCamera(context: VideoScanActivity) {
+            context.resumeOrReleaseArArCamera()
+        }
+    }
+
+    fun addFileAndTimeInData(){
+        fileWithTimeList.add(FileWithTime.Files(mARCoreSession!!.FileNumber - 1,mainViewModel.timerCount))
+        ModelPreferencesManager.put(
+            FileWithTime(fileWithTimeList),
+            PrefsConstants.PREVIOUS_VIDEO_SCAN_FILE_WITH_TIME
+        )
+    }
+
+    fun generateZipFile() {
+        isUploadingStarted = true
+
+        val path = "${cacheDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}"
+        val f = File(path)
+        val files: Array<File> = f.listFiles()!!
+
+        val outputDirectory = File("${filesDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}")
+        if (!outputDirectory.exists()) {
+            if (!outputDirectory.mkdir()) {
+                Log.e(LOG_TAG, "update: Cannot create output directory.")
+            }
+        }
+
+        var name = if(isPreviousScanZipUploading){
+            if (this::previousVideoScanData.isInitialized && previousVideoScanData.floorName.isNotEmpty() && previousVideoScanData.orderNumber.isNotEmpty()) {
+                previousVideoScanData.orderNumber + "_" + previousVideoScanData.floorName.replace(" ", "_").plus("_")
+                    .plus(System.currentTimeMillis().toString()).plus(".zip")
+            } else {
+                "1_".plus(System.currentTimeMillis().toString()).plus(".zip")
+            }
+        }else{
+            if (floorName.isNotEmpty() && orderNumber.isNotEmpty()) {
+                orderNumber + "_" + floorName.replace(" ", "_").plus("_")
+                    .plus(System.currentTimeMillis().toString()).plus(".zip")
+            } else {
+                "1_".plus(System.currentTimeMillis().toString()).plus(".zip")
+            }
+        }
+
+
+        val mZipPath = File(outputDirectory.absolutePath, name)
+        val zipFile = ZipFile(mZipPath)
+        zipFile.isRunInThread = true
+
+        val progressMonitor: ProgressMonitor = zipFile.progressMonitor
+
+        val zipParameters = ZipParameters()
+        zipParameters.isIncludeRootFolder = false
+        zipParameters.compressionMethod = Zip4jConstants.COMP_DEFLATE
+        zipParameters.compressionLevel = Zip4jConstants.DEFLATE_LEVEL_MAXIMUM
+
+        Log.e(LOG_TAG, "path :: $path")
+        if (files.isNotEmpty()) {
+            if (path.isNotEmpty()) {
+                if (::mDialogZip.isInitialized && !mDialogZip.isShowing) {
+                    mDialogZip.show()
+                    resumeOrReleaseArArCamera()
+
+
+                    ModelPreferencesManager.put(
+                        PreviousVideoScan(floorName,orderNumber, FLOOR_INDEX,
+                            WALL_THCKNESS,mZipPath.absolutePath),
+                        PrefsConstants.PREVIOUS_VIDEO_SCAN_DATA
+                    )
+                }
+                setZipProgressPercentage(getString(R.string.preparing_zip) + " 0%")
+                zipFile.addFolder(path, zipParameters)
+            }
+        } else {
+            Log.e(LOG_TAG, "Scan data is not available")
+        }
+
+        val handler = Handler()
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                try {
+                    if (progressMonitor.state != ProgressMonitor.STATE_READY) {
+                        handler.postDelayed(this, 500)
+                        Log.e(LOG_TAG, "progressMonitor :: " + progressMonitor.percentDone)
+                        setZipProgressPercentage(getString(R.string.preparing_zip) + " " + progressMonitor.percentDone + "%")
+                    } else if (progressMonitor.result == ProgressMonitor.RESULT_SUCCESS
+                        || progressMonitor.result == ProgressMonitor.RESULT_CANCELLED
+                        || progressMonitor.result == ProgressMonitor.RESULT_ERROR
+                    ) {
+
+                        setZipProgressPercentage(getString(R.string.preparing_zip) + " 0%")
+                        hideZipDialog()
+
+                        if (progressMonitor.result == ProgressMonitor.RESULT_ERROR
+                            || (TextUtils.isEmpty(mZipPath.absolutePath) || !mZipPath.exists())
+                        ) {
+                            progressMonitor.reset()
+                            publishFailProcessAck(VideoScan.DTT_REMOTE_VIDEO_BASE_ZIP_FAIL)
+                            showHideZipRetry(true)
+                            if (progressMonitor.exception != null && progressMonitor.exception.message != null) {
+                                captureMessage(
+                                    LOG_TAG.plus(" :: generateZipFile"),
+                                    progressMonitor.exception.message.toString()
+                                )
+                            } else {
+                                captureMessage(
+                                    LOG_TAG.plus(" :: generateZipFile"),
+                                    "RESULT ERROR"
+                                )
+                            }
+                        } else if (progressMonitor.result == ProgressMonitor.RESULT_SUCCESS) {
+                            if (AppUtils.hasInternet(this@VideoScanActivity)) {
+                                if (zipFileUpdate != null) {
+                                    zipFileUpdate = null
+                                }
+                                Log.e(LOG_TAG, "start upload")
+                                if (mZipPath.exists() && !isZipUpload) {
+                                    isZipUpload = true
+                                    zipFileUpdate =
+                                        ZipUploadTask().execute(mZipPath.absolutePath)
+                                }
+                            } else {
+                                showHideZipUploadRetry(true, mZipPath.absolutePath)
+                            }
+                        }
+
+                        handler.removeCallbacks(this)
+                    }
+                } catch (e: Exception) {
+                    captureException(LOG_TAG.plus(" :: generateZipFile Exception"), e)
+                }
+            }
+        }, 500)
+
+        when (progressMonitor.result) {
+            ProgressMonitor.RESULT_SUCCESS -> {
+                Log.e("progressMonitor", "Successfully added folder to zip :: ")
+                hideZipDialog()
+            }
+            ProgressMonitor.RESULT_ERROR -> {
+                Log.e("progressMonitor", "Error occurred. Error message:")
+                hideZipDialog()
+            }
+            ProgressMonitor.RESULT_CANCELLED -> {
+                Log.e("progressMonitor", "Task cancelled")
+                hideZipDialog()
+            }
+        }
+    }
+
+    private inner class ZipUploadTask : AsyncTask<String?, String?, String?>() {
+
+        val isZipUploadCancel = "-1"
+
+        var bytesRead = 0
+        var bytesAvailable: Int = 0
+        var bufferSize: Int = 0
+        var maxBufferSize = 1024 * 1024
+        lateinit var buffer: ByteArray
+        var totalByteReadParentage: Int = 0
+        var totalByteRead: Int = 0
+
+        override fun onPreExecute() {
+            super.onPreExecute()
+            currentStatusVIdeo = SCANSTATUS.ZIP_UPLOADING
+            Log.e(LOG_TAG, "onPreExecute :: successful ::")
+            runOnUiThread {
+                mDialogUploading.show()
+                resumeOrReleaseArArCamera()
+            }
+        }
+
+        override fun onPostExecute(result: String?) {
+            super.onPostExecute(result)
+            Log.e(LOG_TAG, "onPostExecute :: successful ::")
+            runOnUiThread {
+                isZipUpload = false
+                if (!TextUtils.isEmpty(result) && !result!!.contentEquals(isZipUploadCancel)) {
+                    craeteZipName = result
+                    setUploadProgressPercentage(getString(R.string.zip_uploading).plus(" 100%"))
+                    hideUploadDialog(true)
+                    hideUploadCancel()
+                    deleteZipFile()
+                    if (!result.contentEquals(isZipUploadCancel)) {
+                        try {
+                            var floorIndex = "3"
+                            var wallThickNess = "6"
+
+                            if(isPreviousScanZipUploading){
+                                if(this@VideoScanActivity::previousVideoScanData.isInitialized){
+                                    floorIndex = previousVideoScanData.floorIndex
+                                    wallThickNess = previousVideoScanData.wallThickNess
+                                }
+                            }else{
+                                floorIndex = FLOOR_INDEX
+                                wallThickNess = WALL_THCKNESS
+                            }
+                            mainViewModel.updateZipData(
+                                BaseApplication.baseApplication.getJwtToken(),
+                                ZipFileUpdateInfo(
+                                    mPreference.getString(PrefsConstants.JOB_ORDER_ID, "")!!,
+                                    result,
+                                    floorIndex.trim().toInt(),
+                                    wallThickNess.trim().toInt()
+                                )
+                            )
+                        } catch (e: java.lang.Exception) {
+                            captureException(
+                                LOG_TAG.plus(
+                                    " :: callZipUploadApi ${
+                                        floorIndex.trim()
+                                            .toString() + " " + wallThickness.trim().toString()
+                                    }"
+                                ), e
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        override fun onProgressUpdate(vararg values: String?) {
+            super.onProgressUpdate(*values)
+            Log.e(LOG_TAG, "JsonTask Progress Bar" + values[0])
+        }
+
+        override fun doInBackground(vararg p0: String?): String {
+            var fileName = ""
+            try {
+                FileInputStream(p0[0]).use { fis ->
+                    val source = File(p0[0])
+                    var url =
+                        if (mPreference.getString(PrefsConstants.FULL_CONTAINER_PATH, "")!!
+                                .isNotEmpty()
+                        ) {
+                            mPreference.getString(PrefsConstants.FULL_CONTAINER_PATH, "")!!
+                        } else {
+                            mPreference.getString(
+                                PrefsConstants.BLOB_URL_FOR_FLOOR_SCAN_STORAGE,
+                                ""
+                            ).plus(mPreference.getString(PrefsConstants.SAVE_STORE_PATH, ""))
+                        }
+
+                    val sas = "?".plus(mPreference.getString(PrefsConstants.SAVE_SAS_TOKEN, ""))
+                    val blobUri: String = url + sas
+                    Log.e(LOG_TAG, "Azure store url with name :: " + url + source.name + sas)
+                    if (source.exists()) {
+                        try {
+                            val container = CloudBlobContainer(URI(blobUri))
+                            val blob = container.getBlockBlobReference(source.name)
+
+                            val blobOutputStream: BlobOutputStream = blob.openOutputStream()
+
+                            val totalBytes: Int = fis.available()
+                            var lastByte: Int = 0
+
+                            bytesAvailable = fis.available()
+                            bufferSize = Math.min(bytesAvailable, maxBufferSize)
+                            buffer = ByteArray(bufferSize)
+
+                            bytesRead = fis.read(buffer, 0, bufferSize)
+                            Log.e(LOG_TAG, "bytesAvailable :: $bytesAvailable")
+                            while (bytesRead > 0) {
+                                blobOutputStream.write(buffer, 0, bufferSize)
+                                bytesAvailable = fis.available()
+                                bufferSize = Math.min(bytesAvailable, maxBufferSize)
+                                bytesRead = fis.read(buffer, 0, bufferSize)
+                                totalByteRead += bytesRead
+
+                                val read = totalByteRead.toDouble()
+                                val total = totalBytes.toDouble()
+
+                                totalByteReadParentage = ((read / total) * 100).toInt()
+
+                                if (totalByteReadParentage != lastByte) {
+                                    lastByte = totalByteReadParentage
+                                    Log.e(LOG_TAG, "bytesRead :: $totalByteReadParentage")
+                                    setUploadProgressPercentage(getString(R.string.zip_uploading) + " " + totalByteReadParentage + "%")
+                                }
+                            }
+                            blobOutputStream.close()
+                            if (blob.properties.length < 0) {
+                                showHideZipUploadRetry(true, p0[0]!!)
+                                SentryUtils.captureMessage(
+                                    LOG_TAG,
+                                    "Fail to uploading ZIP file"
+                                )
+                                Log.e(LOG_TAG, "Fail to uploading ZIP file :: ")
+                            } else {
+                                fileName = source.name
+                            }
+                        } catch (e: Exception) {
+                            if (isCancelled) return isZipUploadCancel
+                            showHideZipUploadRetry(true, p0[0]!!)
+                            captureException(
+                                LOG_TAG.plus(" :: doInBackground => Exception"),
+                                e
+                            )
+                            Log.e(LOG_TAG, "Exception :: Fail to uploading ZIP file")
+                        }
+                        Log.e(LOG_TAG, "Blob Output Stream :: Successful")
+                    } else {
+                        showHideZipUploadRetry(true, p0[0]!!)
+                        SentryUtils.captureMessage(
+                            LOG_TAG,
+                            "Blob Output Stream :: File not found"
+                        )
+                        Log.e(LOG_TAG, "Blob Output Stream :: File not found")
+                    }
+                    fis.close()
+                }
+            } catch (e: OutOfMemoryError) {
+                SentryUtils.captureMessage(
+                    LOG_TAG.plus(
+                        " :: doInBackground => " +
+                                "OutOfMemoryError while uploading zip file"
+                    ), e.message.toString()
+                )
+                showHideZipUploadRetry(true, p0[0]!!)
+                Log.e(LOG_TAG, "OutOfMemoryError :: ")
+            } catch (e: StorageException) {
+                captureException(
+                    LOG_TAG.plus(
+                        " :: doInBackground => " +
+                                "StorageException while uploading zip file"
+                    ), e
+                )
+                showHideZipUploadRetry(true, p0[0]!!)
+                Log.e(LOG_TAG, "StorageException :: ")
+            } catch (e: FileNotFoundException) {
+                captureException(
+                    LOG_TAG.plus(
+                        " :: doInBackground => " +
+                                "FileNotFoundException while uploading zip file"
+                    ), e
+                )
+                showHideZipUploadRetry(true, p0[0]!!)
+                Log.e(LOG_TAG, "FileNotFoundException :: ")
+            }
+            return fileName
+        }
+    }
+
+    private fun setZipProgressDialog() {
+        mDialogZip = Dialog(this@VideoScanActivity)
+        mDialogZip.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogZip.setCancelable(false)
+        mDialogZip.setContentView(R.layout.dialog_file_upload_progress)
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogZip.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        zipProgressText =
+            mDialogZip.findViewById(R.id.tvProgressPercentage) as AppCompatTextView
+        val btnCancel: AppCompatTextView =
+            mDialogZip.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+        btnCancel.hide()
+
+        val progressBar = mDialogZip.findViewById(R.id.pbPercentage) as ProgressBar
+        progressBar.indeterminateDrawable.setColorFilter(
+            res.getColor(R.color.mt_button_bg_color), PorterDuff.Mode.MULTIPLY
+        )
+
+        mDialogZip.window!!.attributes = lp
+    }
+
+    override fun getViewModel(): MainViewModel {
+        return mainViewModel
+    }
+
+    private fun onBackFuncationality() {
+        if (!mPreference.getBoolean(
+                PrefsConstants.SCAN_FROM_MEASUREMENT_LINK,
+                false
+            )
+        ) {
+            publish(EventResumeCall(""))
+        }
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_MEASUREMENT_LINK, false)
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_CALL_LINK, false)
+        mPreference.save(
+            PrefsConstants.IS_APP_OPEN_FROM_MEASUREMENT_LINK_DURING_ONGOING_MEASUREMENT,
+            false
+        )
+        mPreference.save(PrefsConstants.IS_APP_OPEN_FROM_CALL_LINK_DURING_ONGOING_CALL, false)
+        //hideLinkAlert()
+    }
+
+    private fun publishVideoScanScreenVisibility(status: String,isPreviousVideoScanDetect : Boolean) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_BASE_SCREEN)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, status)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    if(isPreviousVideoScanDetect){
+                        jsonObjectData.put(
+                            DTT_MEASUREMENT_REUPLOAD_VIDEO_AVAILABLE,
+                            ONE
+                        )
+                    }else{
+                        jsonObjectData.put(
+                            DTT_MEASUREMENT_REUPLOAD_VIDEO_AVAILABLE,
+                            TWO
+                        )
+                    }
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    captureException(
+                        LOG_TAG.plus(" :: publishVideoScanScreenVisibility"),
+                        e
+                    )
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun publishBtnAck(type: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_BASE_ACK)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_TYPE_PARAM, type)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch
+                    (e: java.lang.Exception) {
+                    captureException(LOG_TAG.plus(" :: publishBtnAck"), e)
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun publishFailProcessAck(type: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_RETRY_DIALOG)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_TYPE_PARAM, type)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    captureException(LOG_TAG.plus(" :: publishFailProcessAck"), e)
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun showArAlert(
+        image: Int,
+        title: String,
+        message: String,
+        background: Int,
+        rotation: Float
+    ) {
+        runOnUiThread {
+            binding.alertVideoScan.alertVideoScan.backgroundTintList =
+                AppCompatResources.getColorStateList(this, background)
+            //linearArToastView.backgroundTintList = ContextCompat.getColorStateList(this,R.color.colorPrimary)
+            if (image == 0) {
+                binding.alertVideoScan.ivAlertVideoScan.visibility = View.INVISIBLE
+            } else {
+                binding.alertVideoScan.ivAlertVideoScan.setImageResource(image)
+                binding.alertVideoScan.ivAlertVideoScan.show()
+            }
+            binding.alertVideoScan.tvAlertVideoScan.text = title
+            if (message.isEmpty()) {
+                binding.alertVideoScan.tvAlertVideoScanMsg.hide()
+            } else {
+                binding.alertVideoScan.tvAlertVideoScanMsg.show()
+                binding.alertVideoScan.tvAlertVideoScanMsg.text = message
+            }
+
+            if (rotation != 0F) {
+                val rotate = RotateAnimation(
+                    0f, rotation,
+                    Animation.RELATIVE_TO_SELF, 0.5f, Animation.RELATIVE_TO_SELF, 0.5f
+                )
+                rotate.fillAfter = true
+                binding.alertVideoScan.vInnerViewAlert.startAnimation(rotate)
+
+            } else {
+                val rotate = RotateAnimation(
+                    0f, 0F,
+                    Animation.RELATIVE_TO_SELF, 0.5f, Animation.RELATIVE_TO_SELF, 0.5f
+                )
+                rotate.fillAfter = true
+                binding.alertVideoScan.vInnerViewAlert.startAnimation(rotate)
+            }
+            binding.alertVideoScan.alertVideoScan.visibility = View.VISIBLE
+        }
+    }
+
+    private fun hidearAlert() {
+        runOnUiThread {
+            binding.alertVideoScan.alertVideoScan.visibility = View.GONE
+        }
+    }
+
+    private fun hideZipDialog() {
+        runOnUiThread {
+            if (this@VideoScanActivity::mDialogZip.isInitialized && mDialogZip.isShowing) {
+                mDialogZip.dismiss()
+                resumeOrReleaseArArCamera()
+            }
+        }
+    }
+
+    private fun showZipGenerateDialog(){
+        runOnUiThread {
+            if (::mDialogZip.isInitialized && !mDialogZip.isShowing) {
+                mDialogZip.show()
+            }
+        }
+    }
+
+    private fun hideUploadDialog(isUploading: Boolean) {
+        runOnUiThread {
+            if (this@VideoScanActivity::mDialogUploading.isInitialized && mDialogUploading.isShowing) {
+                mDialogUploading.dismiss()
+                if(!isUploading) {
+                    resumeOrReleaseArArCamera()
+                }
+            }
+        }
+    }
+
+    private fun hideUploadCancel() {
+        runOnUiThread {
+            if (this@VideoScanActivity::mDialogCancle.isInitialized && mDialogCancle.isShowing) {
+                mDialogCancle.dismiss()
+            }
+        }
+    }
+
+    private fun hideScanAbortStorge() {
+        if (this@VideoScanActivity::mDialogScanAbortStorge.isInitialized && mDialogScanAbortStorge.isShowing) {
+            mDialogScanAbortStorge.dismiss()
+        }
+    }
+
+    private fun hideScanAbortWarringStorge() {
+        if (this@VideoScanActivity::mDialogScanAbortWarringStorge.isInitialized && mDialogScanAbortWarringStorge.isShowing) {
+            mDialogScanAbortWarringStorge.dismiss()
+        }
+    }
+
+    private fun setUploadProgressDialog() {
+        mDialogUploading = Dialog(this@VideoScanActivity)
+        mDialogUploading.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogUploading.setCancelable(false)
+        mDialogUploading.setContentView(R.layout.dialog_file_upload_progress)
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogUploading.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        val tvMsg: AppCompatTextView =
+            mDialogUploading.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        tvMsg.text = getString(R.string.app_not_close)
+
+        uploadProgressText =
+            mDialogUploading.findViewById(R.id.tvProgressPercentage) as AppCompatTextView
+        uploadProgressText.text = getString(R.string.zip_uploading)
+
+        zipUploadCancelBtn =
+            mDialogUploading.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+        zipUploadCancelBtn.show()
+        zipUploadCancelBtn.setOnClickListener {
+            cancelOngoingUpload()
+        }
+
+        val progressBar = mDialogUploading.findViewById(R.id.pbPercentage) as ProgressBar
+        progressBar.indeterminateDrawable.setColorFilter(
+            res.getColor(R.color.mt_button_bg_color), PorterDuff.Mode.MULTIPLY
+        )
+
+        mDialogUploading.window!!.attributes = lp
+    }
+
+    private fun cancelOngoingUpload() {
+        showCancelUploadDialog()
+        hideUploadDialog(false)
+    }
+
+    private fun setZipProgressPercentage(msg: String) {
+        runOnUiThread {
+            if (this@VideoScanActivity::zipProgressText.isInitialized) {
+                zipProgressText.text = msg
+            }
+        }
+    }
+
+    private fun setUploadProgressPercentage(msg: String) {
+        runOnUiThread {
+            if (this@VideoScanActivity::uploadProgressText.isInitialized) {
+                uploadProgressText.text = msg
+            }
+        }
+    }
+
+    private fun showCancelUploadDialog() {
+        mDialogCancle = AppUtils.showZipFailDialog(this, 2, onRetry = {
+            if (zipFileUpdate != null) {
+                zipFileUpdate!!.cancel(true)
+                deleteZipFile()
+            }
+            runOnUiThread {
+                isZipUpload = false
+                isUploadingStarted = false
+                isPreviousScanFileDetect = false
+                publishFailProcessAck(VideoScan.DTT_REMOTE_VIDEO_BASE_USER_CANCEL_UPLOAD)
+                binding.buttonStartStop.isEnabled = true
+                binding.buttonStartStop.setText(R.string.start_title)
+                binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+                binding.ivFloorScan.setImageDrawable(
+                    ContextCompat.getDrawable(
+                        this,
+                        R.drawable.ic_floor_scan
+                    )
+                )
+                DrawableCompat.setTint(
+                    binding.llPublishFloorScan.background,
+                    ContextCompat.getColor(
+                        this,
+                        R.color.button_green_color
+                    )
+                )
+            }
+        }, onCancel = {
+            runOnUiThread {
+                if (this@VideoScanActivity::mDialogUploading.isInitialized && !mDialogUploading.isShowing) {
+                    mDialogUploading.show()
+                    resumeOrReleaseArArCamera()
+                }
+            }
+        })
+    }
+
+    private fun deleteZipFile(isparticularScanDelete: Boolean = false) {
+        try {
+            if (isparticularScanDelete) {
+                val filenumber = mARCoreSession!!.FileNumber - 1
+                val cacheZipData =
+                    File("${cacheDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}/$filenumber")
+                if (cacheZipData.exists()) {
+                    deleteCacheFiles(cacheZipData)
+                    mARCoreSession!!.FileNumber--
+                }
+
+            } else {
+                val zip = File("${filesDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}")
+                if (zip.exists()) {
+                    deleteCacheFiles(zip)
+                }
+
+                val cacheZipData =
+                    File("${cacheDir.absolutePath}/${AppConstants.FLOOR_SCAN_ITEMS}")
+                if (cacheZipData.exists()) {
+                    deleteCacheFiles(cacheZipData)
+                }
+            }
+        } catch (e: java.lang.Exception) {
+            captureException(LOG_TAG.plus(" :: deleteZipFile"), e)
+            Log.e(LOG_TAG, "Delete the zip file :: $e")
+        }
+    }
+
+    private fun deleteCacheFiles(dir: File): Boolean {
+        if (dir.isDirectory) {
+            val children: Array<String> = dir.list()!!
+            for (i in children.indices) {
+                val success: Boolean = deleteCacheFiles(File(dir, children[i]))
+                if (!success) {
+                    return false
+                }
+            }
+        }
+        return dir.delete()
+    }
+
+    private fun setUpRetryZipUploadDialog() {
+        mDialogZipUploadRetry = Dialog(this)
+        mDialogZipUploadRetry.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogZipUploadRetry.setCancelable(false)
+        mDialogZipUploadRetry.setContentView(R.layout.dialog_video_scan_result)
+
+        val tvTitle =
+            mDialogZipUploadRetry.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        val tvDescription =
+            mDialogZipUploadRetry.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        zipRetryUploadBtn =
+            mDialogZipUploadRetry.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        zipRetryUploadCancelBtn =
+            mDialogZipUploadRetry.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogZipUploadRetry.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        zipRetryUploadCancelBtn.show()
+        tvTitle.text = getString(R.string.fail)
+        tvDescription.text = getString(R.string.fail_to_upload_zip_file)
+        zipRetryUploadBtn.text = getString(R.string.retry)
+
+        res.changeButtonColorView(zipRetryUploadBtn, R.drawable.button_background)
+
+        zipRetryUploadBtn.setOnClickListener {
+            clickEventZipUploadRetryBtn()
+        }
+
+        zipRetryUploadCancelBtn.setOnClickListener {
+            clickEventZipUploadRtryCancelBtn()
+        }
+
+        mDialogZipUploadRetry.window!!.attributes = lp
+    }
+
+    private fun setUpRetryZipDialog() {
+        mDialogZipRetry = Dialog(this@VideoScanActivity)
+        mDialogZipRetry.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogZipRetry.setCancelable(false)
+        mDialogZipRetry.setContentView(R.layout.dialog_video_scan_result)
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogZipRetry.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        val tvMsg: AppCompatTextView =
+            mDialogZipRetry.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        val tvTitle: AppCompatTextView =
+            mDialogZipRetry.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        zipRetryBtn =
+            mDialogZipRetry.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        zipRetryCancelBtn =
+            mDialogZipRetry.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+
+        zipRetryBtn.text = getString(R.string.retry)
+        zipRetryCancelBtn.show()
+        tvTitle.show()
+        tvMsg.show()
+        tvTitle.text = getString(R.string.zip_fail_dialog_title)
+        tvMsg.text = getString(R.string.zip_fail_dialog_msg)
+
+        res.changeButtonColorView(zipRetryBtn, R.drawable.button_background)
+
+        zipRetryBtn.setOnClickListener {
+            clickEventZipRetryBtn()
+        }
+
+        zipRetryCancelBtn.setOnClickListener {
+            clickEventZipRtryCancelBtn()
+        }
+
+        mDialogZipRetry.window!!.attributes = lp
+    }
+
+    private fun setUpEndAndPublishPermissionDialog() {
+        mDialogEndAndPublishPermission = Dialog(this)
+        mDialogEndAndPublishPermission.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogEndAndPublishPermission.setCancelable(false)
+        mDialogEndAndPublishPermission.setContentView(R.layout.dialog_video_scan_result)
+
+        val tvTitle =
+            mDialogEndAndPublishPermission.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        val tvDescription =
+            mDialogEndAndPublishPermission.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        endAndPublishPermissionYesBtn =
+            mDialogEndAndPublishPermission.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        endAndPublishPermissionNoBtn =
+            mDialogEndAndPublishPermission.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogEndAndPublishPermission.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        tvTitle.hide()
+        endAndPublishPermissionNoBtn.show()
+        tvDescription.text = getString(R.string.lbl_end_scan_and_publish)
+        endAndPublishPermissionYesBtn.text = getString(R.string.yes)
+        endAndPublishPermissionNoBtn.text = getString(R.string.no)
+
+        res.changeButtonColorView(endAndPublishPermissionYesBtn, R.drawable.button_background)
+
+        endAndPublishPermissionYesBtn.setOnClickListener {
+            clickEndAndPublishPermissionYesBtn()
+        }
+
+        endAndPublishPermissionNoBtn.setOnClickListener {
+            clickEndAndPublishPermissionNoBtn()
+        }
+
+        mDialogEndAndPublishPermission.window!!.attributes = lp
+
+    }
+
+    private fun setUpCancelOngoingScan() {
+        mDialogCancelOngoingScan = Dialog(this)
+        mDialogCancelOngoingScan.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogCancelOngoingScan.setCancelable(false)
+        mDialogCancelOngoingScan.setContentView(R.layout.dialog_video_scan_result)
+
+        val tvTitle =
+            mDialogCancelOngoingScan.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        val tvDescription =
+            mDialogCancelOngoingScan.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        cancelOngoingScanYesBtn =
+            mDialogCancelOngoingScan.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        cancelOngoingScanNoBtn =
+            mDialogCancelOngoingScan.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogCancelOngoingScan.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        tvTitle.hide()
+        cancelOngoingScanNoBtn.show()
+        tvDescription.text = getString(R.string.lbl_cancel_ongoing_scan)
+        cancelOngoingScanYesBtn.text = getString(R.string.yes)
+        cancelOngoingScanNoBtn.text = getString(R.string.no)
+
+        res.changeButtonColorView(cancelOngoingScanYesBtn, R.drawable.button_background)
+
+        cancelOngoingScanYesBtn.setOnClickListener {
+            clickCancelOngoingScanDialogYesBtn()
+        }
+
+        cancelOngoingScanNoBtn.setOnClickListener {
+            clickCancelOngoingScanDialogNoBtn()
+        }
+
+        mDialogCancelOngoingScan.window!!.attributes = lp
+    }
+
+    private fun clickEndAndPublishPermissionYesBtn() {
+        runOnUiThread {
+            if (this::mDialogEndAndPublishPermission.isInitialized) {
+                mDialogEndAndPublishPermission.dismiss()
+            }
+            if (mainViewModel.timerCount > 30) {
+                stopRecording()
+                mInterfaceTimer.cancel()
+            } else {
+                showToast(getString(R.string.lbl_minimum_one_for_end_call))
+            }
+        }
+    }
+
+    private fun clickEndAndPublishPermissionNoBtn() {
+        runOnUiThread {
+            if (this::mDialogEndAndPublishPermission.isInitialized) {
+                mDialogEndAndPublishPermission.dismiss()
+            }
+        }
+    }
+
+    private fun clickCancelOngoingScanDialogYesBtn() {
+        runOnUiThread {
+            if (this::mDialogCancelOngoingScan.isInitialized) {
+                mDialogCancelOngoingScan.dismiss()
+            }
+            onBackPressed()
+        }
+    }
+
+    private fun clickCancelOngoingScanDialogNoBtn() {
+        runOnUiThread {
+            if (this::mDialogCancelOngoingScan.isInitialized) {
+                mDialogCancelOngoingScan.dismiss()
+            }
+        }
+    }
+
+    private fun clickEventZipRetryBtn() {
+        runOnUiThread {
+            if (this::mDialogZipRetry.isInitialized) {
+                mDialogZipRetry.dismiss()
+            }
+            publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP)
+            generateZipFile()
+        }
+    }
+
+    private fun clickEventZipRtryCancelBtn() {
+        runOnUiThread {
+            if (this::mDialogZipRetry.isInitialized) {
+                mDialogZipRetry.dismiss()
+            }
+            isUploadingStarted = false
+            isPreviousScanFileDetect = false
+            publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_CANCEL)
+            binding.buttonStartStop.isEnabled = true
+            binding.buttonStartStop.setText(R.string.start_title)
+            binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_scan
+                )
+            )
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(
+                    this,
+                    R.color.button_green_color
+                )
+            )
+            deleteZipFile()
+        }
+    }
+
+    private fun clickEventZipUploadRetryBtn() {
+        runOnUiThread {
+            if (this::mDialogZipUploadRetry.isInitialized) {
+                mDialogZipUploadRetry.dismiss()
+            }
+            if (apiCallFail) {
+                if (craeteZipName.isNotEmpty()) {
+                    publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_UPLOAD)
+                    if (AppUtils.hasInternet(this@VideoScanActivity)) {
+                        try {
+                            var floorIndex = "3"
+                            var wallThickNess = "6"
+
+                            if(isPreviousScanZipUploading){
+                                if(this@VideoScanActivity::previousVideoScanData.isInitialized){
+                                    floorIndex = previousVideoScanData.floorIndex
+                                    wallThickNess = previousVideoScanData.wallThickNess
+                                }
+                            }else{
+                                floorIndex = FLOOR_INDEX
+                                wallThickNess = WALL_THCKNESS
+                            }
+
+                            mainViewModel.updateZipData(
+                                BaseApplication.baseApplication.getJwtToken(),
+                                ZipFileUpdateInfo(
+                                    mPreference.getString(PrefsConstants.JOB_ORDER_ID, "")!!,
+                                    craeteZipName,
+                                    floorIndex.trim().toInt(),
+                                    wallThickNess.trim().toInt()
+                                )
+                            )
+                        } catch (e: java.lang.Exception) {
+                            captureException(
+                                LOG_TAG.plus(
+                                    " :: callZipUploadApi retry ${
+                                        floorIndex.trim()
+                                            .toString() + " " + wallThickness.trim().toString()
+                                    }"
+                                ), e
+                            )
+                        }
+                    } else {
+                        showHideZipUploadRetryWhenApiFail(true, craeteZipName)
+                    }
+                }
+            } else {
+                if (craeteZipName.isNotEmpty()) {
+                    publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_UPLOAD)
+                    if (AppUtils.hasInternet(this@VideoScanActivity)) {
+                        if (zipFileUpdate != null) {
+                            zipFileUpdate = null
+                        }
+                        Log.e(LOG_TAG, "zip upload retry")
+                        zipFileUpdate = ZipUploadTask().execute(craeteZipName)
+                    } else {
+                        showHideZipUploadRetry(true, craeteZipName)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun clickEventZipUploadRtryCancelBtn() {
+        runOnUiThread {
+            if (this::mDialogZipUploadRetry.isInitialized) {
+                mDialogZipUploadRetry.dismiss()
+            }
+            if (apiCallFail) {
+                apiCallFail = false
+            }
+            if (craeteZipName.isNotEmpty()) {
+                publishBtnAck(VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_ZIP_UPLOAD_CANCEL)
+                isUploadingStarted = false
+                isPreviousScanFileDetect = false
+                binding.buttonStartStop.isEnabled = true
+                binding.buttonStartStop.setText(R.string.start_title)
+                binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+                binding.ivFloorScan.setImageDrawable(
+                    ContextCompat.getDrawable(
+                        this,
+                        R.drawable.ic_floor_scan
+                    )
+                )
+                DrawableCompat.setTint(
+                    binding.llPublishFloorScan.background,
+                    ContextCompat.getColor(
+                        this,
+                        R.color.button_green_color
+                    )
+                )
+                try {
+                    val zip = File(craeteZipName)
+                    if (zip.exists()) zip.delete()
+                } catch (e: java.lang.Exception) {
+                    captureException(
+                        LOG_TAG.plus(" :: clickEventZipUploadRtryCancelBtn"),
+                        e
+                    )
+                }
+            }
+            deleteZipFile()
+        }
+    }
+
+    private fun showHideZipRetry(show: Boolean) {
+        runOnUiThread {
+            if (show) {
+                mDialogZipRetry.show()
+            } else {
+                mDialogZipRetry.dismiss()
+            }
+        }
+    }
+
+    private fun showEndAndPublishPermissionDialog(show: Boolean) {
+        runOnUiThread {
+            if (show) {
+                mDialogEndAndPublishPermission.show()
+            } else {
+                mDialogEndAndPublishPermission.dismiss()
+            }
+        }
+    }
+
+    private fun showCancelOngoingScanDialog(show: Boolean) {
+        runOnUiThread {
+            if (show) {
+                mDialogCancelOngoingScan.show()
+            } else {
+                mDialogCancelOngoingScan.dismiss()
+            }
+        }
+    }
+
+    private fun showHideZipUploadRetry(show: Boolean, text: String) {
+        runOnUiThread {
+            if (show) {
+                publishFailProcessAck(VideoScan.DTT_REMOTE_VIDEO_BASE_ZIP_UPLOAD_FAIL)
+                setUploadProgressPercentage("")
+                hideUploadDialog(false)
+                hideUploadCancel()
+                craeteZipName = text
+                mDialogZipUploadRetry.show()
+            } else {
+                mDialogZipUploadRetry.dismiss()
+            }
+        }
+    }
+
+    private fun showHideZipUploadRetryWhenApiFail(show: Boolean, text: String) {
+        runOnUiThread {
+            if (show) {
+                publishFailProcessAck(VideoScan.DTT_REMOTE_VIDEO_BASE_ZIP_UPLOAD_FAIL)
+                setUploadProgressPercentage("")
+                hideUploadDialog(false)
+                hideUploadCancel()
+                craeteZipName = text
+                mDialogZipUploadRetry.show()
+            } else {
+                mDialogZipUploadRetry.dismiss()
+            }
+        }
+    }
+
+    private fun publishErrorInStartMeasurement(status: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(
+                        TYPE,
+                        VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_IN_START_VIDEO_SCAN
+                    )
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, status)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    captureException(
+                        LOG_TAG.plus(" :: publishErrorInStartMeasurement"),
+                        e
+                    )
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun publishErrorInEndAndPublish() {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(
+                        TYPE,
+                        VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_IN_END_AND_PUBLISH
+                    )
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    captureException(LOG_TAG.plus(" :: publishErrorInEndAndPublish"), e)
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun publishErrorInVideoScan(dtType: String, type: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, dtType)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    if (type.isNotEmpty()) {
+                        jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, type)
+                    }
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    captureException(LOG_TAG.plus(" :: publishErrorInVideoScan"), e)
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    fun directoryCreateError(type: Int) {
+        if (this::mDialogVideoError.isInitialized && mDialogVideoError.isShowing) {
+            mDialogVideoError.dismiss()
+        }
+
+        showEndAndPublishPermissionDialog(false)
+        showCancelOngoingScanDialog(false)
+
+        publishErrorInVideoScan(
+            VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_SCAN,
+            VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_VIDEO_SCAN_ERROR
+        )
+        currentStatusVIdeo = SCANSTATUS.FAIL
+        if (dialog != null && dialog!!.isShowing) {
+            dialog!!.dismiss()
+        }
+        runOnUiThread {
+            binding.llReScan.hide()
+        }
+        mDialogVideoError = AppUtils.showZipFailDialog(this, type, onRetry = {
+            retryVideoError()
+        }, onCancel = {
+            cancelVideoError()
+        })
+    }
+
+    private fun retryVideoError() {
+        resetScanningAndStartScan()
+    }
+
+    private fun cancelVideoError() {
+        resetScanning()
+        publishErrorInVideoScan(
+            VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN_ACK,
+            VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_SCAN
+        )
+    }
+
+    private fun resetScanningAndStartScan() {
+        runOnUiThread {
+            if (fastMovementDetection != null) {
+                fastMovementDetection!!.stop()
+            }
+            isUploadingStarted = false
+            addFileAndTimeInData()
+            mARCoreSession!!.stopSession()
+            mIsRecording.set(false)
+            mainViewModel.timerCount = 0
+
+            deleteZipFile()
+
+            binding.buttonStartStop.isEnabled = true
+            binding.buttonStartStop.setText(R.string.start_title)
+            binding.buttonStartStop.setTextColor(res.getColor(R.color.white))
+            runOnUiThread {
+                binding.llReScan.hide()
+            }
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_scan
+                )
+            )
+            DrawableCompat.setTint(
+                binding.llPublishFloorScan.background,
+                ContextCompat.getColor(
+                    this,
+                    R.color.button_green_color
+                )
+            )
+            resetUI()
+            mInterfaceTimer.cancel()
+
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN_ACK,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_RETRY_SCAN
+            )
+
+            if (/*mARCoreSession != null
+                && mARCoreSession!!.getHitResult() != null
+                && !mARCoreSession!!.getHitResult().isNullOrEmpty() &&*/ !isARFirstTImeInitaizeRunning /*&& !mARCoreSession!!.iSDriftingRunning && mARCoreSession!!.is_check_frame_drift_before_scan*/
+            ) {
+                if (isDeviceInLandscap) {
+                    binding.llPublishFloorScan.callOnClick()
+                } else {
+                    publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_DEVICE_NOT_LANDSCAPE)
+                }
+            } else {
+                publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_AR_NOT_SET_UP)
+            }
+        }
+    }
+
+    fun scanAbort() {
+        if (currentStatusVIdeo == SCAN_RUNNING) {
+
+            showEndAndPublishPermissionDialog(false)
+            showCancelOngoingScanDialog(false)
+
+            mARCoreSession?.isHittestDone = false
+
+            if (this::mDialogScanAbortStorge.isInitialized && !mDialogScanAbortStorge.isShowing) {
+                mDialogScanAbortStorge.dismiss()
+            }
+
+            resetScanning()
+
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_SCAN,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_VIDEO_SCAN_ABORT
+            )
+
+            Timer().schedule(object : TimerTask() {
+                override fun run() {
+                    runOnUiThread {
+                        resetUI()
+                    }
+                }
+            }, 1000)
+
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN_ACK,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_SCAN
+            )
+
+            mDialogScanAbortStorge = AppUtils.showZipFailDialog(
+                this,
+                SCAN_FAIL_REASON.INSUFFICIENT_SPACE,
+                onRetry = {},
+                onCancel = {})
+
+            currentStatusVIdeo = SCANSTATUS.IDEAL
+        }
+    }
+
+    private fun startScaningFromDT() {
+
+        if (/*mARCoreSession != null
+            && mARCoreSession!!.getHitResult() != null
+            && !mARCoreSession!!.getHitResult().isNullOrEmpty() && */!isARFirstTImeInitaizeRunning /*&& !mARCoreSession!!.iSDriftingRunning && mARCoreSession!!.is_check_frame_drift_before_scan*/
+        ) {
+            if (isDeviceInLandscap) {
+                if (!mIsRecording.get() && binding.buttonStartStop.text == getString(
+                        R.string.start_title
+                    )
+                ) {
+                    startRecording()
+                }
+            } else {
+                publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_DEVICE_NOT_LANDSCAPE)
+            }
+        } else {
+            publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_AR_NOT_SET_UP)
+        }
+    }
+
+    private fun resumeScanningFromDT() {
+        if (/*mARCoreSession != null
+            && mARCoreSession!!.getHitResult() != null
+            && !mARCoreSession!!.getHitResult().isNullOrEmpty() && */!isARFirstTImeInitaizeRunning /*&& !mARCoreSession!!.iSDriftingRunning && mARCoreSession!!.is_check_frame_drift_before_scan*/
+        ) {
+            if (isDeviceInLandscap) {
+                if (!mIsRecording.get() && binding.buttonStartStop.text == getString(
+                        R.string.resume
+                    )
+                ) {
+                    startRecording()
+                }
+            } else {
+                publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_DEVICE_NOT_LANDSCAPE)
+            }
+        } else {
+            publishErrorInStartMeasurement(VideoScan.DTT_REMOTE_VIDEO_BASE_AR_NOT_SET_UP)
+        }
+    }
+
+    private fun showArToastWindowMain(src: Int, message: String, isArInitialized: Boolean) {
+        if (!isArInitialized) {
+            binding.topRelativeLayout.topRelativeLayout.visibility = View.VISIBLE
+            binding.topRelativeLayout.tvMsg.text = message
+            binding.topRelativeLayout.imgAr.setImageResource(src)
+        } else {
+            binding.topRelativeLayout.topRelativeLayout.visibility = View.GONE
+        }
+    }
+
+    fun scanAbortDuetoDrift() {
+        if (currentStatusVIdeo == SCAN_RUNNING) {
+            resetScanning()
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_SCAN,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_VIDEO_SCAN_ABORT
+            )
+            Timer().schedule(object : TimerTask() {
+                override fun run() {
+                    runOnUiThread {
+                        resetUI()
+                    }
+                }
+            }, 1000)
+            publishErrorInVideoScan(
+                VideoScan.DTT_REMOTE_VIDEO_BASE_ERROR_VIDEO_CONVERSION_DIALOG_BTN_ACK,
+                VideoScan.DTT_REMOTE_VIDEO_BASE_CANCEL_SCAN
+            )
+            mDialogScanAbort =
+                AppUtils.showZipFailDialog(this, DRIFT, onRetry = {}, onCancel = {})
+            currentStatusVIdeo = SCANSTATUS.IDEAL
+        }
+    }
+    /* // for show drift value
+    fun setDriftValue(driftText:String) {
+        driftextVIew.setText(driftText)
+        driftextVIew.show()
+    }*/
+
+    fun hideDriftTextView() {
+        binding.driftextVIew.hide()
+    }
+
+    fun pauseRecordig() {
+        if (binding.buttonStartStop.text == getString(
+                R.string.start_title
+            )
+        )
+            return
+
+        if (currentStatusVIdeo == SCANSTATUS.IDEAL) {
+            return
+        }
+
+        if (currentStatusVIdeo == SCANSTATUS.IDEAL || currentStatusVIdeo == SCANSTATUS.FAIL) {
+            return
+        }
+
+        binding.llPublishFloorScan.hide()
+        binding.llReScan.show()
+
+        if (!isRescanDTSent) {
+            publishRescanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN_STATE_OCCUR)
+            isRescanDTSent = true
+        }
+
+        currentStatusVIdeo = SCAN_PAUSE
+        // for resume image compare functionality
+        /*   if(mIsRecording.get()) {
+            binding.buttonStartStop.setText(getString(R.string.resume))
+        }
+        binding.buttonStartStop.text = getString(R.string.resume)
+        binding.ivFloorScan.setImageDrawable(
+            ContextCompat.getDrawable(
+                this,
+                R.drawable.ic_resume_scan
+            )
+        )
+        ImageViewCompat.setImageTintList(
+            binding.ivFloorScan, ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.white)
+            )
+        )
+        DrawableCompat.setTint(
+            binding.llPublishFloorScan.background,
+            ContextCompat.getColor(
+                this,
+                R.color.ar_resume_color
+            )
+        )*/
+
+
+    }
+
+    // for resume image compare functionality
+    fun showTransperentImage(imageBitmap: Bitmap) {
+        /*       ivTransperent.visibility=View.VISIBLE
+        ivTransperent.alpha=0.5f
+        ivTransperent.setImageBitmap(imageBitmap)
+ */
+    }
+
+    fun clearAssisgnedBitmap() {
+        binding.ivTransperent.setImageBitmap(null)
+    }
+
+    fun hideTransperentImage() {
+        binding.ivTransperent.visibility = View.GONE
+    }
+
+
+    fun resumeScanCOnditionSatisfy() {
+        if (currentStatusVIdeo == SCAN_PAUSE) {
+            currentStatusVIdeo = SCAN_RUNNING
+            mARCoreSession!!.isRecord = true
+            binding.buttonStartStop.setText(R.string.stop_title)
+            binding.ivFloorScan.setImageDrawable(
+                ContextCompat.getDrawable(
+                    this,
+                    R.drawable.ic_floor_plan_published
+                )
+            )
+            changeEndAndPublish()
+            hideTransperentImage()
+            return
+        }
+    }
+
+    fun showResumeScanningDialog() {
+        if (currentStatusVIdeo == SCANSTATUS.FAIL) {
+            return
+        }
+        if (isOpenNewActiivty) {
+            runOnUiThread()
+            {
+                dialog =
+                    AppUtils.showZipFailDialog(this, RESUME_SCAN, onRetry = {}, onCancel = {})
+            }
+        }
+    }
+
+
+    fun setUpRescanAreaDialog(activity: Activity, onclick: () -> Unit) {
+        mDialogRescanArea = Dialog(this)
+        mDialogRescanArea.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogRescanArea.setCancelable(false)
+        mDialogRescanArea.setContentView(R.layout.dialog_video_scan_result)
+        val tvTitle =
+            mDialogRescanArea.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        val tvDescription =
+            mDialogRescanArea.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        val btnOk =
+            mDialogRescanArea.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        val btnCancel =
+            mDialogRescanArea.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogRescanArea.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+        tvTitle.show()
+        tvDescription.hide()
+        btnCancel.show()
+        tvTitle.text = getString(R.string.rescan_dialog_title)
+        btnOk.text = getString(R.string.yes)
+        btnCancel.text = getString(R.string.no)
+
+        res.changeButtonColorView(btnOk, R.drawable.button_background)
+
+        btnOk.setOnClickListener {
+            mDialogRescanArea.dismiss()
+            onclick()
+        }
+        btnCancel.setOnClickListener {
+            mDialogRescanArea.dismiss()
+            publishRescanDT(VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN_BTN_DENIED_ACK)
+        }
+        mDialogRescanArea.show()
+        mDialogRescanArea.window!!.attributes = lp
+    }
+
+    private fun hideRescanDialog() {
+        runOnUiThread {
+            if (this@VideoScanActivity::mDialogRescanArea.isInitialized && mDialogRescanArea.isShowing) {
+                mDialogRescanArea.dismiss()
+            }
+        }
+    }
+
+    fun showToastMessages(message: String) {
+        showCustomToast(message)
+        Handler().postDelayed({
+            hideToast()
+        }, 5000)
+    }
+
+    private fun hideToast() {
+        binding.toastLayout.visibility = View.GONE
+    }
+
+    private fun showCustomToast(message: String) {
+        binding.toastLayout.visibility = View.VISIBLE
+        binding.floorPlanToastText.text = message
+    }
+
+    private fun changeEndAndPublish() {
+        res.changeBackgroundTintDrawableOfView(
+            binding.llPublishFloorScan,
+            R.drawable.button_background_green,
+            R.color.mt_button_bg_color
+        )
+
+        res.changeTextColorOfView(binding.buttonStartStop, R.color.mt_button_text_color)
+        res.changeImageViewSrcColor(binding.ivFloorScan, R.color.mt_button_text_color)
+    }
+
+    private fun publishRescanDT(status: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_BASE_RESCAN)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, status)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun publishResumeDT(status: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_BASE_RESUME)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, status)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    override fun attachBaseContext(base: Context?) {
+        AppUtils.setLanguage(
+            BaseApplication.prefs.getString(
+                PrefsConstants.PREF_SELECTED_LANGUAGE,
+                Language.LANGUAGE_ENGLISH
+            )!!
+        )
+        super.attachBaseContext(LocalManager.onAttach(base))
+    }
+
+    private fun resumeOrReleaseArArCamera() {
+        try {
+            if(mARCoreSession==null)
+            {
+                return
+            }
+            mARCoreSession?.isPause = mDialogUploading.isShowing ||
+                    mDialogZip.isShowing ||
+                    binding.buttonStartStop.text == getString(R.string.scan_other_floor)
+            binding.isFileUploading = mARCoreSession?.isPause
+            if(mARCoreSession?.isPause!!){
+                view.surfaceView.onPause()
+                if(view.session != null){
+                    view.session!!.pause()
+                }
+            } else {
+                if(view.session != null){
+                    view.session!!.resume()
+                }
+                view.surfaceView.onResume()
+            }
+        } catch (e:SessionPausedException) {
+            eLog(LOG_TAG, "resumeOrReleaseArArCamera : SessionPausedException")
+            captureException(LOG_TAG.plus("resumeOrReleaseArArCamera : SessionPausedException"), e)
+        } catch(e: Exception) {
+            eLog(LOG_TAG, "resumeOrReleaseArArCamera : Exception")
+            captureException(LOG_TAG.plus("resumeOrReleaseArArCamera : Exception"), e)
+        }
+    }
+
+    private fun releaseArArCamera(release : Boolean) {
+        try {
+            binding.isFileUploading = release
+            if(release){
+                view.surfaceView.onPause()
+                if(view.session != null){
+                    view.session!!.pause()
+                }
+            } else {
+                if(view.session != null){
+                    view.session!!.resume()
+                }
+                view.surfaceView.onResume()
+            }
+        } catch (e:SessionPausedException) {
+            eLog(LOG_TAG, "resumeOrReleaseArArCamera : SessionPausedException")
+            captureException(LOG_TAG.plus("resumeOrReleaseArArCamera : SessionPausedException"), e)
+        } catch(e: Exception) {
+            eLog(LOG_TAG, "resumeOrReleaseArArCamera : Exception")
+            captureException(LOG_TAG.plus("resumeOrReleaseArArCamera : Exception"), e)
+        }
+    }
+
+    private fun startTimerForScreenAck() {
+        mScreenACKTimer = Timer()
+        mScreenACKTimer.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                if (!isVideoScreenACKReceive) {
+                    if (binding.btnCancelVideoScan.isShown) {
+                        publishVideoScanScreenVisibility(VideoScan.DTT_REMOTE_VIDEO_BASE_SCREEN_VISIBLE,isPreviousScanFileDetect)
+                    }
+                } else {
+                    mScreenACKTimer.cancel()
+                }
+            }
+        }, 1000, 5000)
+    }
+
+    private fun setUpReuploadPreviousScanDialog(activity: Activity, onUpload: () -> Unit, onCancel : () -> Unit) {
+        mDialogReuploadScan = Dialog(this)
+        mDialogReuploadScan.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        mDialogReuploadScan.setCancelable(false)
+        mDialogReuploadScan.setContentView(R.layout.dialog_video_scan_result)
+        val tvTitle =
+            mDialogReuploadScan.findViewById(R.id.tvVideoScanDialogTitle) as AppCompatTextView
+        val tvDescription =
+            mDialogReuploadScan.findViewById(R.id.tvVideoScanDialogMsg) as AppCompatTextView
+        val btnOk =
+            mDialogReuploadScan.findViewById(R.id.btnVideoScanDialogOk) as AppCompatTextView
+        val btnCancel =
+            mDialogReuploadScan.findViewById(R.id.btnVideoScanDialogCancel) as AppCompatTextView
+
+        val lp: WindowManager.LayoutParams = WindowManager.LayoutParams()
+        lp.copyFrom(mDialogReuploadScan.window!!.attributes)
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+
+        tvTitle.show()
+        tvDescription.hide()
+        btnCancel.show()
+        tvTitle.text = getString(R.string.previous_scan_title)
+        btnOk.text = getString(R.string.previous_scan_re_upload)
+        btnCancel.text = getString(R.string.previous_scan_cancel)
+
+        res.changeButtonColorView(btnOk, R.drawable.button_background)
+
+        btnOk.setOnClickListener {
+            mDialogReuploadScan.dismiss()
+            onUpload()
+        }
+        btnCancel.setOnClickListener {
+            mDialogReuploadScan.dismiss()
+            onCancel()
+        }
+        mDialogReuploadScan.show()
+        mDialogReuploadScan.window!!.attributes = lp
+    }
+
+    private fun showReuploadPreviousScanDialog(show : Boolean){
+        runOnUiThread {
+            if (show) {
+                if(this::mDialogReuploadScan.isInitialized){
+                    mDialogReuploadScan.show()
+                }
+            } else {
+                if(this::mDialogReuploadScan.isInitialized && mDialogReuploadScan.isShowing){
+                    mDialogReuploadScan.dismiss()
+                }
+            }
+        }
+    }
+
+    private fun publishReuploadPreviousScanDT(status: String) {
+        if (!mPreference.getBoolean(PrefsConstants.SCAN_FLOOR_FROM_GUEST_USER_FLOW, false)
+            && !mPreference.getBoolean(PrefsConstants.SCAN_FROM_MEASUREMENT_LINK, false)
+        ) {
+            if (!currentScreenSharedSid.isEmpty()) {
+                try {
+                    val jsonObject = JSONObject()
+                    jsonObject.put(TYPE, VideoScan.DTT_REMOTE_VIDEO_BASE_REUPLOAD_VIDEO_SCAN)
+                    val jsonObjectData = JSONObject()
+                    jsonObject.put(DATA, jsonObjectData)
+                    jsonObjectData.put(VideoScan.DTT_REMOTE_VIDEO_BASE_STATUS_PARAM, status)
+                    jsonObjectData.put(
+                        DTT_SHARE_SCREEN_PARAM_SCREEN_SHARE_PARTICIPANT_SID,
+                        currentLocalParticipantSid
+                    )
+                    twilioHelper.sendUserDataDataTrack(jsonObject.toString())
+                } catch (e: java.lang.Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+}

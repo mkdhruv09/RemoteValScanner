@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">RemoteVal Video Scanner</string>
+    <string name="app_name_title">RemoteVal SDK : Demo</string>
+    <string name="creating_job_order">Generating Job Order</string>
+    <string name="fetching_tenant_info">Fetching Tenant Information</string>
+    <string name="select_wall_thickness_inch">Select Wall Thickness (inch)</string>
+    <string name="select_floor">Select Floor</string>
+    <string name="start_scanning">Start Scanning</string>
+    <string name="timer_enable">Timer Enable</string>
+    <string name="auto_zipping_enable">Auto Zipping Enable</string>
+    <string name="country">Country</string>
+    <string name="postal_code">Postal Code</string>
+    <string name="state">State</string>
+    <string name="city">City</string>
+    <string name="property_address_2">Property Address 2</string>
+    <string name="property_address_1">Property Address 1</string>
+    <string name="owner_phone">Owner Phone</string>
+    <string name="owner_email">Owner Email</string>
+    <string name="owner_name">Owner Name</string>
+    <string name="order_id">Order Id</string>
+    <string name="continue_button">Continue</string>
+    <string name="scan_another_floor">Do you want to Scan Another Floor?</string>
+    <string name="yes">Yes</string>
+    <string name="upload_successful">Scan Uploaded successfully</string>
+    <string name="invalid_owner_name">Invalid Owner Name</string>
+    <string name="invalid_owner_email">Invalid Owner Email</string>
+    <string name="invalid_phone">Invalid Phone</string>
+    <string name="invalid_address_first">Invalid Address 1</string>
+    <string name="invalid_address_second">Invalid Address 2</string>
+    <string name="invalid_city">Invalid City</string>
+    <string name="invalid_state">Invalid State</string>
+    <string name="invalid_country">Invalid Country</string>
+    <string name="invalid_postal_code">Invalid Postal Code</string>
+</resources>
