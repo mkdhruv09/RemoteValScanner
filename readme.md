@@ -39,8 +39,7 @@ version 1.7.0.
 
 Download following files
 
-[Android library module](https://sdk-files.s3.us-east-2.amazonaws.com/android/remoteval-capture-release-1.0.0.aar) <br/>
-[Android library dependency](https://sdk-files.s3.us-east-2.amazonaws.com/android/remoteval-lib.gradle)
+[Android library module](https://github.com/sculptsoft-dev/RemoteValScanner/releases) <br/>
 
 Add the RemoteVal library module to your project:
 
@@ -126,6 +125,12 @@ your scanning `Activity`'s `activity` tag - Example:
 </application>
 ```
 
+To allow activity to set full screen mode add this in ```onCreate()``` of ```ScanActivity``` class.
+```kotlin
+FullScreenHelper.setFullScreenOnWindowFocusChanged(this, true)
+```
+
+
 1. Declare lateinit variable of remoteValFragment into your scanning activity
 
 ```kotlin
@@ -156,7 +161,12 @@ override fun getStatus(code: Int, description: String) {
 
 ```Kotlin
 override fun getFile(fileStatus: RemoteValFileStatus, file: File) {
-    
+    if (fileStatus == RemoteValFileStatus.FILE_SCAN_FOLDER) {
+        val zipFile = remoteValFragment.zipScan(file) // received folder remoteval accepts only zip so you have to generate zip  
+        sendResult(zipFile) // zip as result you can use later on to upload
+    } else if (fileStatus == RemoteValFileStatus.FILE_ZIP) {
+        sendResult(file) // zip as result you can use later on to upload
+    }
 }
 ```
 
@@ -190,7 +200,6 @@ Example:
 val mainStorage: File = filesDir
 remoteValFragment.allScansFolder = mainStorage
 ```
-
 
 
 ## Uploading Part
