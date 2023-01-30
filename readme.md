@@ -20,19 +20,20 @@
 ## Example Project
 
 This project provides an example implementation and use of the RemoteVal Video based scanning
-library module. From this project you can get the basic idea of how to implement the scanning and
+library module. From this project you can get a basic idea of how to implement the scanning and
 scan playback with RemoteVal capture to your app.
 
 ## Video based scan library module
 
-RemoteVal Video based scanning library module provides a scanning `Fragment` which can be used to
+RemoteVal Video-based scanning library module provides a scanning `Fragment` which can be used to
 scan a floor plan with an Android device. The scanning `Fragment` saves scan files into a zip file,
 which your app can upload to the RemoteVal back-end for processing. RemoteVal SDK handles corner
-cases like fast scanning, Too near to wall, ceiling scanning to guide user for proper scanning
+cases like fast scanning, Too near to the wall, and ceiling scanning to guide user for proper
+scanning.
 
 ## Implementation
 
-This implementation was made with Android Studio Dolphin | 2021.3.1 Patch 1 using Gradle plugin
+This implementation was made with Android Studio Electric Eel | 2022.1.1 using Gradle plugin
 version 1.7.0.
 
 ### Setting up
@@ -48,7 +49,7 @@ Add the RemoteVal library module to your project:
    In the `Declared Dependencies` tab, click `+` and select `JAR/AAR Dependency`.
 3. In the `JAR/AAR Dependency` dialog, enter the path as `libs/remoteval-capture-release-1.0.0.aar`
    and select `implementation` as configuration. -> Press `OK`.
-4. Or you can do manually by copying `remoteval-capture-release-1.0.0.aar` file to `app/libs/`folder
+4. Or you can do it manually by copying `remoteval-capture-release-1.0.0.aar` file to `app/libs/`folder
    and do the next step (Skip this step if you already did previous step)
 5. Check your app's `build.gradle` file to confirm a that in contains the following declaration
    `implementation files('libs/remoteval-capture-release-1.0.0.aar')`. (add this if not present)
@@ -75,7 +76,6 @@ Add the RemoteVal library module to your project:
        }
        buildFeatures {
            viewBinding true
-           dataBinding true
        }
    }
    ```
@@ -88,18 +88,13 @@ Create a layout file and add RemoteValFragment
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto" 
-    android:layout_width="match_parent"
+    xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <androidx.fragment.app.FragmentContainerView 
-        android:id="@+id/fragment"
-        android:name="com.app.videoscanner.RemoteValFragment"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" 
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" 
-        app:layout_constraintStart_toStartOf="parent"
+    <androidx.fragment.app.FragmentContainerView android:id="@+id/fragment"
+        android:name="com.app.videoscanner.RemoteValFragment" android:layout_width="match_parent"
+        android:layout_height="match_parent" app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
@@ -118,18 +113,10 @@ your scanning `Activity`'s `activity` tag - Example:
 ```xml
 
 <application>
-    <activity android:name=".ScanActivity" 
-        android:largeHeap="true"
-        android:screenOrientation="landscape" 
-        android:configChanges="orientation|screenSize" />
+    <activity android:name=".ScanActivity" android:largeHeap="true"
+        android:screenOrientation="landscape" android:configChanges="orientation|screenSize" />
 </application>
 ```
-
-To allow activity to set full screen mode add this in ```onCreate()``` of ```ScanActivity``` class.
-```kotlin
-FullScreenHelper.setFullScreenOnWindowFocusChanged(this, true)
-```
-
 
 1. Declare lateinit variable of remoteValFragment into your scanning activity
 
@@ -144,15 +131,16 @@ remoteValFragment = supportFragmentManager.findFragmentById(R.id.fragment) as Re
 ```
 
 3. Implement in ScanActivity RemoteValEventListener for Scanner Callback
+
 ```kotlin
-class ScanActivity : AppCompatActivity(),RemoteValEventListener
+class ScanActivity : AppCompatActivity(), RemoteValEventListener
 ```
 
 4. Add the following function to receive status updates from `RemoteValEventListener`:
 
 ```Kotlin
 override fun getStatus(code: Int, description: String) {
-    
+
 }
 ```
 
@@ -161,12 +149,7 @@ override fun getStatus(code: Int, description: String) {
 
 ```Kotlin
 override fun getFile(fileStatus: RemoteValFileStatus, file: File) {
-    if (fileStatus == RemoteValFileStatus.FILE_SCAN_FOLDER) {
-        val zipFile = remoteValFragment.zipScan(file) // received folder remoteval accepts only zip so you have to generate zip  
-        sendResult(zipFile) // zip as result you can use later on to upload
-    } else if (fileStatus == RemoteValFileStatus.FILE_ZIP) {
-        sendResult(file) // zip as result you can use later on to upload
-    }
+
 }
 ```
 
@@ -178,18 +161,19 @@ remoteValFragment.registerCallback(this)
 
 7. Set scanning location by giving folder name `scanFolderName: String`
    where we store the scan files.
-   **Note!** You should always check that a scan folder with that name does not already exist, and
+   **Note!** You should always check that a scan folder with that name does not already exist and
    that the `String` value of the scan folder name is a valid `File` name!
 
 ```Kotlin
-val scanningFolderName: String = getScanFolderName() // here you can give name which usually want to create folder as
+val scanningFolderName: String =
+    getScanFolderName() // here you can give name which usually want to create folder as
 remoteValFragment.scanFolderName = scanningFolderName
 ```
 
 8. Set the `allScansFolder: File?` to set the directory where RemoteVal will save all the scan
    folders. Android 11 Storage updates will restrict where your app can store data. We suggest the
    directory returned by `fileDir` for storing scan data. Just make sure that the storage is
-   available and that the returned `File` is not `null`. Default folder location is cacheDir
+   available and that the returned `File` is not `null`. The default folder location is cacheDir
    <br/>
    If you're using other directory then read more about Android 11 storage updates from :
    [Android Storage](https://developer.android.com/about/versions/11/privacy/storage)
@@ -200,7 +184,6 @@ Example:
 val mainStorage: File = filesDir
 remoteValFragment.allScansFolder = mainStorage
 ```
-
 
 ## Uploading Part
 
@@ -246,13 +229,13 @@ val orderInfo = OrderInfoRequest(
     longitude = currentLongitude.toString()
 )
 
-remoteValManager.generateOrder(
-    orderInfo, object : RemoteValManager.JobOrderCallback {
+remoteValManager.generateJobOrder(
+    orderInfoRequest = orderInfo, object : RemoteValManager.JobOrderCallback {
         override fun onSuccess(orderInfo: OrderInfo) {
             // After successful generation of order 
             // you'll get OrderInfo response from server it contains "jobOrderId" for your reference
             // Now you can ask user to select floor and wall thickness : this is optional
-            startFloorSelectionScreen()
+            startFloorSelectionScreen() or startScanning()
         }
 
         override fun onFailure(throwable: Throwable) {
@@ -261,11 +244,25 @@ remoteValManager.generateOrder(
     })
 ```
 
-4. Upload Scanned file : Once your scanning completed upload zip file using
+4. Upload Scanned file : Once your scanning completed upload zip file
+   First, It requires storage detail to upload scanned file. To retrieve storage info call
+
+```kotlin
+ remoteValManager.getStorageDetail(orderInfo!!,
+    success = { storageInfo ->
+
+    }, failure = { throwable ->
+
+    }
+)
+```
+
+Once you've storage detail then you can upload scanned file using that storage info by
 
 ```kotlin
  remoteValManager.upload(
     file = zipFile,
+    storageInfo = storageInfo,
     jobUploadCallback = object : RemoteValManager.JobUploadCallback {
         override fun onProgressPercentage(percentage: Int) {
 
@@ -281,7 +278,7 @@ remoteValManager.generateOrder(
     })
 ```
 
-5. Create Floor Scan : After successfully upload Scanned Zip file you've to create floor scan using
+5. Create Floor Scan : After successfully upload Scanned Zip file you've to create a floor scan using
 
 ```kotlin
 remoteValManager.uploadFloorScan(
@@ -299,6 +296,43 @@ remoteValManager.uploadFloorScan(
         }
     }
 )
+
+```
+
+## State Country Data
+
+To create job order it requires Country and state. it should be one of them. so you can get those
+list by
+
+```kotlin
+RemoteValResource.getStates(): List<State>
+RemoteValResource.getCountries(): List<Country>
+```
+
+## Floor Selection
+
+To Scan floor it must have Floor Index and Wall thickness.
+RemoteVal also provides multi floor uploading option.
+using it you can also upload multiple scan (like ground floor,1st floor,etc..) for one job order
+
+To get list of supported Floors & Thickness you can use
+
+```kotlin
+RemoteValResource.getFloorIndexNames(context: Context): List<String>
+RemoteValResource.getFloorThicknessList(): List<String>
+```
+
+## HttpException
+
+To retrieve error message body from HttpException (if throwable is HttpException)
+
+```kotlin
+throwable.parseHttpException()?.let { errorResponse ->
+    toast(errorResponse.message) // basic error message retrieve from API
+    Log.e("Error", errorResponse.errorFields.toString()) //Field declaration which generates error
+} ?: run {
+    toast(throwable.localizedMessage ?: "")
+}
 
 ```
 
@@ -323,7 +357,7 @@ remoteValFragment.setAutoZippingEnable(false) // true (auto zips) by default
 ```
 
 Zipping scan folder if automatic zipping is disabled. This can be called after scan files are saved
-successfully. This returns the Zip file if it's is successful or null if zipping failed.
+successfully. This returns the Zip file if it is successful or null if zipping failed.
 
 ```Kotlin
 val zipFile = remoteValFragment.zipScan(scannedFolder) // Pass scan folder path as String
@@ -388,7 +422,7 @@ default `color`s in your application `colors.xml` file.
 #### Drawable graphics
 
 To change CubiCapture's default drawables you have to override them by redefining the drawables in
-your applications `drawables.xml` file. You need to have the `drawables.xml` file created to the
+your applications `drawables.xml` file. You need to have the `drawables.xml` file created in the
 `values` directory where the `colors.xml` file is as well.
 
 Here's all the default drawables defined in CubiCapture library:
@@ -417,7 +451,7 @@ Here's all the default drawables defined in CubiCapture library:
 To change the RemoteVal's default layout sizes, margins and text sizes you have to override the
 library's default dimensions by defining the dimensions in your applications
 `dimens.xml` file. To override the library's default dimensions, you need to have the `dimens.xml`
-file created to the `values` directory where the `colors.xml` file is as well. Here's all the
+file created in the `values` directory where the `colors.xml` file is as well. Here are all the
 default dimensions defined in CubiCapture library:
 
 ```xml
@@ -552,7 +586,7 @@ Here's all the default texts defined in CubiCapture library:
 ## About warning priorities
 
 During a scan, RemoteVal shows a warning to the user if it detects bad scanning styles or any issues
-with the tracking. All the warnings are divided into priority level groups. Higher priority warnings
+with the tracking. All the warnings are divided into priority-level groups. Higher priority warnings
 will override and hide any lower priority warning in order to only show the higher priority warning.
 As an exception, ceiling warning will override horizontal warning, although they have the same
 priority level. Priority level `1` is the highest priority, `2` is the second highest priority and
@@ -567,10 +601,23 @@ so on.
 
 ## Status codes
 
-| Status Code | Message                                          | Description                                                                                                                      |
-|-------------|--------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------|
-| 0           | Device turned to landscape orientation.          | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden. |
-| 1           | Started recoding                                 | Received when the scan is started by pressing the record button.                                                                 |
-| 2           | Finished recording                               | Received when user has ended the scan with the slider and scan has enough data. The saving of the scan files begins after this.  |
-| 8           | ARCore TrackingFailureReason: INSUFFICIENT_LIGHT | Received when ARCore motion tracking is lost due to poor lighting conditions                                                     |
-| 9           | ARCore TrackingFailureReason: EXCESSIVE_MOTION   | Received when ARCore motion tracking is lost due to excessive motion.                                                            |
+| Status Code | Message                                                           | Description                                                                                                                                                                                                                  |
+|-------------|-------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0           | Device turned to landscape orientation.                           | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden.                                                                                             |
+| 1           | Started recoding                                                  | Received when the scan is started by pressing the record button.                                                                                                                                                             |
+| 2           | Finished recording                                                | Received when user has ended the scan with the slider and scan has enough data. The saving of the scan files begins after this.                                                                                              |
+| 6           | Scan folder: $folderPath                                          | Received when the saving of the scan files is finished. The description will contain a path to the scan folder. To receive the scan folder as a File use the RemoteValEventListener's getFile(code: Int, file: File) method  |
+| 7           | Zipping is done. Zip file: $zipFilePath                           | Received when the zipping of the scan files is finished. The description will contain a path to the zip file. To receive the zip file as a File use the CubiEventListener's getFile(code: Int, file: File) method            |
+| 8           | ARCore TrackingFailureReason: INSUFFICIENT_LIGHT                  | Received when ARCore motion tracking is lost due to poor lighting conditions                                                                                                                                                 |
+| 9           | ARCore TrackingFailureReason: EXCESSIVE_MOTION                    | Received when ARCore motion tracking is lost due to excessive motion.                                                                                                                                                        |
+| 10          | ARCore TrackingFailureReason: INSUFFICIENT_FEATURES               | Received when ARCore motion tracking is lost due to insufficient visual features.                                                                                                                                            |
+| 85          | ARCore TrackingFailureReason: SCANNING_TO_CLOSE_PROXIMITY_WARNING | Received if the user is scanning too close to objects and too close.                                                                                                                                                         |
+| 87          | ARCore TrackingFailureReason:TOO_FAST_MOVING_SHOWING_WARNING      | Received when the user turns around too fast while scanning and fast movement.                                                                                                                                               |
+| 101         | Device turned to landscape orientation.                           | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden.                                                                                             |
+| 106         | Device is not compatible with ARCore.                             | Received when the device is not compatible with ARCore.                                                                                                                                                                      |
+| 301         | Install Google Play Services for AR                               | Received when Google Play Services are not installed for AR                                                                                                                                                                  |
+| 302         | Update ARCore                                                     | Received when ARCore are not updated                                                                                                                                                                                         |
+| 305         | SDK is old                                                        | Received when the ARCore SDK that this application was built with is too old for the installed ARCore APK.                                                                                                                   |
+| 306         | Camera is not available                                           | Received when Camera not available                                                                                                                                                                                           |
+| 307         | Session creation failed                                           | Received when failed to create Ar session                                                                                                                                                                                    |
+
