@@ -38,22 +38,20 @@ version 1.7.0.
 
 ### Setting up
 
-Download following files
-
-[Android library module](https://github.com/sculptsoft-dev/RemoteValScanner/releases) <br/>
-
-Add the RemoteVal library module to your project:
-
-1. Place the `remoteval-capture-release-1.0.0.aar` file to your project's `app/libs/` folder.
-2. In Android Studio navigate to: `File` -> `Project Structure` -> `Dependencies` -> `app` ->
+1. Setup Back End using RemoteVal Back End Documentation
+2. You need to communicate with RemoteVal and get Client key
+3. Download the latest aar file from following link
+   [Android library module](https://github.com/sculptsoft-dev/RemoteValScanner/releases) <br/>
+4. Place the `remoteval-capture-release-1.0.0.aar` file to your project's `app/libs/` folder.
+5. In Android Studio navigate to: `File` -> `Project Structure` -> `Dependencies` -> `app` ->
    In the `Declared Dependencies` tab, click `+` and select `JAR/AAR Dependency`.
-3. In the `JAR/AAR Dependency` dialog, enter the path as `libs/remoteval-capture-release-1.0.0.aar`
+6. In the `JAR/AAR Dependency` dialog, enter the path as `libs/remoteval-capture-release-1.0.0.aar`
    and select `implementation` as configuration. -> Press `OK`.
-4. Or you can do it manually by copying `remoteval-capture-release-1.0.0.aar` file to `app/libs/`folder
+7. Or you can do it manually by copying `remoteval-capture-release-1.0.0.aar` file to `app/libs/`folder
    and do the next step (Skip this step if you already did previous step)
-5. Check your app's `build.gradle` file to confirm a that in contains the following declaration
+8. Check your app's `build.gradle` file to confirm a that in contains the following declaration
    `implementation files('libs/remoteval-capture-release-1.0.0.aar')`. (add this if not present)
-6. Copy `lib.gradle` file into your root project directory and then add following line to your app
+9. Copy `lib.gradle` file into your root project directory and then add following line to your app
    level
    `build.gradle` This will include all dependency that require by aar file
 
@@ -62,23 +60,23 @@ Add the RemoteVal library module to your project:
        from("$rootDir/remoteval-lib.gradle")
    }
    ```
-7. Set the `targetSdkVersion` to API level `32` in app level `build.gradle`.
-8. Make sure you've following configuration to your `app>build.gradle` file
+10. Set the `targetSdkVersion` to API level `32` in app level `build.gradle`.
+11. Make sure you've following configuration to your `app>build.gradle` file
 
-   ```Groovy
-   android {
-       compileOptions {
-           sourceCompatibility JavaVersion.VERSION_1_8
-           targetCompatibility JavaVersion.VERSION_1_8
-       }
-       kotlinOptions {
-           jvmTarget = '1.8'
-       }
-       buildFeatures {
-           viewBinding true
-       }
-   }
-   ```
+    ```Groovy
+    android {
+        compileOptions {
+            sourceCompatibility JavaVersion.VERSION_1_8
+            targetCompatibility JavaVersion.VERSION_1_8
+        }
+        kotlinOptions {
+            jvmTarget = '1.8'
+        }
+        buildFeatures {
+            viewBinding true
+        }
+    }
+    ```
 
 ## Scanning part
 
@@ -91,10 +89,14 @@ Create a layout file and add RemoteValFragment
     xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <androidx.fragment.app.FragmentContainerView android:id="@+id/fragment"
-        android:name="com.app.videoscanner.RemoteValFragment" android:layout_width="match_parent"
-        android:layout_height="match_parent" app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" app:layout_constraintStart_toStartOf="parent"
+    <androidx.fragment.app.FragmentContainerView 
+        android:id="@+id/fragment"
+        android:name="com.app.videoscanner.RemoteValFragment" 
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" 
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" 
+        app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
@@ -113,8 +115,10 @@ your scanning `Activity`'s `activity` tag - Example:
 ```xml
 
 <application>
-    <activity android:name=".ScanActivity" android:largeHeap="true"
-        android:screenOrientation="landscape" android:configChanges="orientation|screenSize" />
+    <activity android:name=".ScanActivity" 
+        android:largeHeap="true"
+        android:screenOrientation="landscape" 
+        android:configChanges="orientation|screenSize" />
 </application>
 ```
 
@@ -201,8 +205,9 @@ private val remoteValManager = RemoteValManager.createInstance()
 ```kotlin
 remoteValManager.init(
     clientKey = < YOUR_CLIENT_KEY >,
-apiEnvironment = ApiEnvironment.PRODUCTION_STAGING,
-sdkTokenCallback = object : RemoteValManager.SdkTokenCallback {
+    tenant = < Tenant Name >
+    apiEnvironment = ApiEnvironment.PRODUCTION_STAGING,
+    sdkTokenCallback = object : RemoteValManager.SdkTokenCallback {
     override fun onSuccess() {
     }
 
@@ -226,7 +231,8 @@ val orderInfo = OrderInfoRequest(
     propertyZip = binding.etPostalCode.trimmedText(),
     propertyType = OrderInfoRequest.PROPERTY_TYPE_RESIDENTIAL or PROPERTY_TYPE_COMMERCIAL,
     latitude = currentLatitude.toString(),
-    longitude = currentLongitude.toString()
+    longitude = currentLongitude.toString(),
+    callbackUrl = OrderInfoRequest.CallBackUrl(url = "<put_webhook_url_here>")
 )
 
 remoteValManager.generateJobOrder(
@@ -298,6 +304,12 @@ remoteValManager.uploadFloorScan(
 )
 
 ```
+
+6. After Upload floor scan Technician will create Floor plan and they complete job inspection.
+   On Complete Job inspection RemoteVal Back end will notify the respective Back End using Webhook url.
+
+7. After getting notification respective backend want to call RemoteVal api for floor plan report.
+   For api call refer integration sdk documentation.
 
 ## State Country Data
 
@@ -601,23 +613,38 @@ so on.
 
 ## Status codes
 
-| Status Code | Message                                                           | Description                                                                                                                                                                                                                  |
-|-------------|-------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 0           | Device turned to landscape orientation.                           | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden.                                                                                             |
-| 1           | Started recoding                                                  | Received when the scan is started by pressing the record button.                                                                                                                                                             |
-| 2           | Finished recording                                                | Received when user has ended the scan with the slider and scan has enough data. The saving of the scan files begins after this.                                                                                              |
-| 6           | Scan folder: $folderPath                                          | Received when the saving of the scan files is finished. The description will contain a path to the scan folder. To receive the scan folder as a File use the RemoteValEventListener's getFile(code: Int, file: File) method  |
-| 7           | Zipping is done. Zip file: $zipFilePath                           | Received when the zipping of the scan files is finished. The description will contain a path to the zip file. To receive the zip file as a File use the CubiEventListener's getFile(code: Int, file: File) method            |
-| 8           | ARCore TrackingFailureReason: INSUFFICIENT_LIGHT                  | Received when ARCore motion tracking is lost due to poor lighting conditions                                                                                                                                                 |
-| 9           | ARCore TrackingFailureReason: EXCESSIVE_MOTION                    | Received when ARCore motion tracking is lost due to excessive motion.                                                                                                                                                        |
-| 10          | ARCore TrackingFailureReason: INSUFFICIENT_FEATURES               | Received when ARCore motion tracking is lost due to insufficient visual features.                                                                                                                                            |
-| 85          | ARCore TrackingFailureReason: SCANNING_TO_CLOSE_PROXIMITY_WARNING | Received if the user is scanning too close to objects and too close.                                                                                                                                                         |
-| 87          | ARCore TrackingFailureReason:TOO_FAST_MOVING_SHOWING_WARNING      | Received when the user turns around too fast while scanning and fast movement.                                                                                                                                               |
-| 101         | Device turned to landscape orientation.                           | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden.                                                                                             |
-| 106         | Device is not compatible with ARCore.                             | Received when the device is not compatible with ARCore.                                                                                                                                                                      |
-| 301         | Install Google Play Services for AR                               | Received when Google Play Services are not installed for AR                                                                                                                                                                  |
-| 302         | Update ARCore                                                     | Received when ARCore are not updated                                                                                                                                                                                         |
-| 305         | SDK is old                                                        | Received when the ARCore SDK that this application was built with is too old for the installed ARCore APK.                                                                                                                   |
-| 306         | Camera is not available                                           | Received when Camera not available                                                                                                                                                                                           |
-| 307         | Session creation failed                                           | Received when failed to create Ar session                                                                                                                                                                                    |
+| Status Code | Message                                                                 | Description                                                                                                                                                                                                                 |
+|-------------|-------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0           | Device turned to landscape orientation.                                 | Received when the device is in landscape orientation and either the turn device guidance or the rotate device warning is hidden.                                                                                            |
+| 1           | Started recording                                                       | Received when the scan is started by pressing the record button.                                                                                                                                                            |
+| 2           | Finished recording                                                      | Received when user has ended the scan with the slider and scan has enough data. The saving of the scan files begins after this.                                                                                             |
+| 4           | Saving of scan files finished. (Beginning to zip files.)                | Received when the saving of the scan files is finished. Receiving this code means that the scan has data and scan files are successfully saved without errors. If auto zipping is enabled, zipping will start after this.   |
+| 6           | Scan folder: $folderPath                                                | Received when the saving of the scan files is finished. The description will contain a path to the scan folder. To receive the scan folder as a File use the RemoteValEventListener's getFile(code: Int, file: File) method |
+| 7           | Zipping is done. Zip file: $zipFilePath                                 | Received when the zipping of the scan files is finished. The description will contain a path to the zip file. To receive the zip file as a File use the RemoteValEventListener's getFile(code: Int, file: File) method      |
+| 8           | ARCore TrackingFailureReason: INSUFFICIENT_LIGHT                        | Received when ARCore motion tracking is lost due to poor lighting conditions                                                                                                                                                |
+| 9           | ARCore TrackingFailureReason: EXCESSIVE_MOTION                          | Received when ARCore motion tracking is lost due to excessive motion.                                                                                                                                                       |
+| 10          | ARCore TrackingFailureReason: INSUFFICIENT_FEATURES                     | Received when ARCore motion tracking is lost due to insufficient visual features.                                                                                                                                           |
+| 11          | ARCore TrackingState is TRACKING                                        | Received when ARCore is tracking again.                                                                                                                                                                                     |
+| 12          | MediaFormat and MediaCodec failed to be configured and started.         | Received if MediaFormat and MediaCodec fails to be configured and started when record button is pressed for the first time.                                                                                                 |
+| 15          | Error shutdown. Deleting scan folder: $folder-path                      | Received when the scan is not successful. The scan files are deleted                                                                                                                                                        |
+| 17          | Device is in reverse-landscape orientation.                             | Received when the device is in reverse-landscape orientation and if the device has been in landscape orientation at least once. Rotate device warning is shown.                                                             |
+| 20          | Name of the scan output folder has to be set first. Set .scanFolderName | Received when the record button is pressed and recording cannot be started because scanFolderName has not been set.                                                                                                         |  
+| 22          | Scanning ceiling                                                        | Received when the pitch of the camera has been too high for a certain amount of time and the ceiling warning is shown. Only received if there's no higher priority warnings visible.                                        |
+| 31          | Horizontal scanning                                                     | Received when the pitch of the camera has been too horizontal for a certain amount of time and horizontal warning is shown.                                                                                                 |
+| 50          | MediaMuxer.writeSampleData Exception: $exception                        | Received if the video encoder fails to write an encoded sample into the muxer.                                                                                                                                              |
+| 54          | Writing of scan data failed: $exception                                 | Received if the writing of the scan data fails. The scan files will be deleted (code 15) and CubiCapture will be finished after this (code 5).                                                                              |
+| 56          | MediaCodec.stop() exception: $exception                                 | Received if the finishing of the encode session fails.                                                                                                                                                                      |
+| 57          | MediaMuxer.stop() exception: $exception                                 | Received if the stopping of the muxer fails.                                                                                                                                                                                |
+| 58          | MediaCodec.releaseOutputBuffer() exception: $exception                  | Received if the releasing of the output buffer fails.                                                                                                                                                                       |
+| 85          | ARCore TrackingFailureReason: SCANNING_TO_CLOSE_PROXIMITY_WARNING       | Received if the user is scanning too close to objects and too close.                                                                                                                                                        |
+| 87          | ARCore TrackingFailureReason:TOO_FAST_MOVING_SHOWING_WARNING            | Received when the user turns around too fast while scanning and fast movement.                                                                                                                                              |
+| 100         | ARCore session is initializing                                          | Received if the ARCore session is initializing normally.                                                                                                                                                                    |
+| 101         | ARCore session is initialized                                           | Received if the ARCore session is initialized and ARCore's TrackingState is TRACKING. Only received when the recording has not been started. While recording, status code 11 is received instead.                           |
+| 105         | Unable to create ARCore session. Error: $error                          | Received if an internal error occurred while creating the ARCore session.                                                                                                                                                   |
+| 106         | Device is not compatible with ARCore.                                   | Received when the device is not compatible with ARCore.                                                                                                                                                                     |
+| 301         | Install Google Play Services for AR                                     | Received when Google Play Services are not installed for AR                                                                                                                                                                 |
+| 302         | Update ARCore                                                           | Received when ARCore are not updated                                                                                                                                                                                        |
+| 305         | SDK is old                                                              | Received when the ARCore SDK that this application was built with is too old for the installed ARCore APK.                                                                                                                  |
+| 306         | Camera is not available                                                 | Received when Camera not available                                                                                                                                                                                          |
+| 307         | Session creation failed                                                 | Received when failed to create Ar session                                                                                                                                                                                   |
 
